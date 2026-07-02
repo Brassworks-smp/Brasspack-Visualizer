@@ -1,0 +1,10 @@
+/target
+
+/server_container_dump.json
+/server_player_dump.json
+*.dat
+*.nbt
+
+.DS_Store
+.idea
+.vscode

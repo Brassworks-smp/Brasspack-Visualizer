@@ -1,0 +1,27 @@
+{
+    "providers": [
+        {
+            "type": "bitmap",
+            "file": "minecraft:font/ascii.png",
+            "ascent": 7,
+            "chars": [
+                "",
+                "",
+                " !\"#$%&'()*+,-./",
+                "0123456789:;<=>?",
+                "@ABCDEFGHIJKLMNO",
+                "PQRSTUVWXYZ[\\]^_",
+                "`abcdefghijklmno",
+                "pqrstuvwxyz{|}~",
+                "",
+                "£ƒ",
+                "ªº¬«»",
+                "░▒▓│┤╡╢╖╕╣║╗╝╜╛┐",
+                "└┴┬├─┼╞╟╚╔╩╦╠═╬╧",
+                "╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀",
+                "∅∈",
+                "≡±≥≤⌠⌡÷≈°∙√ⁿ²■"
+            ]
+        }
+    ]
+}
