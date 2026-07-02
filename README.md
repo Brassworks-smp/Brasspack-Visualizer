@@ -17,6 +17,16 @@ Just drag any of these onto the window, or use the "Load files" button. You can
 load several at once - loading the backpacks `.dat` alongside a dump also lets
 you see the contents of backpacks sitting inside other inventories.
 
+## First-time setup
+
+The item images (`atlas_map.json` and `item_atlas.png`) are too big to keep in
+this repo, so you need to grab them from the Brassworks modpack once:
+
+1. In-game, run `brassworks dump itematlas`.
+2. This creates the two files in the `brass_dump` folder in your Minecraft
+   instance root.
+3. Copy both files into this project's `assets/` folder.
+
 ## Running it
 
 ```bash

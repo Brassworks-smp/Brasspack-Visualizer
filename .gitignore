@@ -8,3 +8,6 @@
 .DS_Store
 .idea
 .vscode
+
+assets/atlas_map.json
+assets/item_atlas.png
