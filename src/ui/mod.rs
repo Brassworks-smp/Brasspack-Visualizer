@@ -884,7 +884,9 @@ impl eframe::App for App {
 
             let slot = self.slot;
             let avail_w = ui.available_width();
-            let atlas = self.atlas.as_mut().unwrap();
+            let Some(atlas) = self.atlas.as_mut() else {
+                return;
+            };
             let sources = &self.sources;
             let filtered = &self.filtered;
             let bp = &self.bp_index;
@@ -1051,13 +1053,12 @@ impl eframe::App for App {
         }
 
         let mut nested_action: Option<Action> = None;
-        if let (false, Some(atlas)) = (self.popup.is_empty(), self.atlas.as_mut()) {
+        if let (Some(level), Some(atlas)) = (self.popup.last(), self.atlas.as_mut()) {
             let slot = self.slot;
             let bp = &self.bp_index;
             let hl = self.highlight.as_ref();
             let profiles = &mut self.profiles;
             let depth = self.popup.len();
-            let level = self.popup.last().unwrap();
             let title = level.title.clone();
             let items = &level.items;
             let count = items.len();

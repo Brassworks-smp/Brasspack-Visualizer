@@ -281,8 +281,12 @@ impl Store {
         }
     }
 
+    fn locked_cache(&self) -> std::sync::MutexGuard<'_, HashMap<usize, Arc<Entry>>> {
+        self.cache.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn entry(&self, i: usize) -> Option<Arc<Entry>> {
-        if let Some(hit) = self.cache.lock().unwrap().get(&i) {
+        if let Some(hit) = self.locked_cache().get(&i) {
             return Some(hit.clone());
         }
         let mut entry = match &self.backend {
@@ -300,7 +304,7 @@ impl Store {
             }
         }
         let arc = Arc::new(entry);
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.locked_cache();
         if cache.len() >= CACHE_CAP {
             cache.clear();
         }
@@ -337,7 +341,7 @@ impl Store {
         }
         if changed {
             self.overrides.insert(uuid.to_string(), name.to_string());
-            self.cache.lock().unwrap().clear();
+            self.locked_cache().clear();
         }
         changed
     }
