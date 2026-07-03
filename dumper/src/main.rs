@@ -1,17 +1,21 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fastnbt::Value;
-use flate2::read::{GzDecoder, ZlibDecoder};
-use flate2::write::GzEncoder;
-use flate2::Compression;
+use libdeflater::{CompressionLvl, Compressor, Decompressor};
 use rayon::prelude::*;
+use rustc_hash::FxHashSet;
 use serde::Deserialize;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const NO_SLOT: i64 = i64::MIN;
+
+type IdSet = FxHashSet<String>;
 
 #[derive(Deserialize)]
 struct Config {
@@ -32,10 +36,20 @@ struct DimCfg {
     region_dir: String,
 }
 
-#[derive(Deserialize)]
-struct ChunkBlockEntities {
-    #[serde(default)]
-    block_entities: Vec<Value>,
+struct Ctx {
+    dec: Decompressor,
+    file_buf: Vec<u8>,
+    out_buf: Vec<u8>,
+}
+
+impl Ctx {
+    fn new() -> Self {
+        Ctx {
+            dec: Decompressor::new(),
+            file_buf: Vec::with_capacity(4 << 20),
+            out_buf: vec![0u8; 1 << 20],
+        }
+    }
 }
 
 fn main() {
@@ -45,9 +59,10 @@ fn main() {
         std::process::exit(2);
     };
 
-    let cfg: Config = match std::fs::read(cfg_path).map_err(|e| e.to_string()).and_then(|b| {
-        serde_json::from_slice(&b).map_err(|e| e.to_string())
-    }) {
+    let cfg: Config = match std::fs::read(cfg_path)
+        .map_err(|e| e.to_string())
+        .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+    {
         Ok(c) => c,
         Err(e) => {
             eprintln!("failed to read config: {e}");
@@ -55,18 +70,17 @@ fn main() {
         }
     };
 
-    if cfg.mode != "containers" && !cfg.mode.is_empty() {
+    if !cfg.mode.is_empty() && cfg.mode != "containers" {
         eprintln!("unsupported mode: {}", cfg.mode);
         std::process::exit(2);
     }
 
-    let targets: HashSet<String> = cfg.target_ids.into_iter().collect();
-    let vaults: HashSet<String> = cfg.vault_ids.into_iter().collect();
+    let targets: IdSet = cfg.target_ids.into_iter().collect();
+    let vaults: IdSet = cfg.vault_ids.into_iter().collect();
 
     let mut region_files: Vec<(String, PathBuf)> = Vec::new();
     for dim in &cfg.dimensions {
-        let dir = Path::new(&dim.region_dir);
-        let Ok(rd) = std::fs::read_dir(dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dim.region_dir) else { continue };
         for ent in rd.flatten() {
             let p = ent.path();
             if p.extension().and_then(|e| e.to_str()) == Some("mca") {
@@ -84,29 +98,19 @@ fn main() {
 
     let results: Vec<Value> = region_files
         .par_iter()
-        .flat_map_iter(|(dim, path)| {
+        .map_init(Ctx::new, |ctx, (dim, path)| {
             let mut out: Vec<Value> = Vec::new();
-            let mut local_chunks = 0usize;
-            scan_region(path, |chunk_nbt| {
-                local_chunks += 1;
-                let parsed: Result<ChunkBlockEntities, _> = fastnbt::from_bytes(chunk_nbt);
-                if let Ok(chunk) = parsed {
-                    for be in &chunk.block_entities {
-                        if let Some(entry) = extract_container(be, dim, &targets, &vaults) {
-                            out.push(entry);
-                        }
-                    }
-                }
-            });
+            let scanned = scan_region_file(path, dim, &targets, &vaults, ctx, &mut out);
 
-            chunks_scanned.fetch_add(local_chunks, Ordering::Relaxed);
+            chunks_scanned.fetch_add(scanned, Ordering::Relaxed);
             found.fetch_add(out.len(), Ordering::Relaxed);
             let done = files_done.fetch_add(1, Ordering::Relaxed) + 1;
-            if done == total || done % 32 == 0 {
+            if done == total || done % 64 == 0 {
                 println!("PROGRESS {done} {total} {}", found.load(Ordering::Relaxed));
             }
             out
         })
+        .flatten_iter()
         .collect();
 
     let mut root: HashMap<String, Value> = HashMap::new();
@@ -134,13 +138,16 @@ fn main() {
 }
 
 fn write_gzip(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let mut c = Compressor::new(CompressionLvl::default());
+    let bound = c.gzip_compress_bound(data.len());
+    let mut out = vec![0u8; bound];
+    let n = c
+        .gzip_compress(data, &mut out)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+    out.truncate(n);
+
     let tmp = path.with_extension("nbt.tmp");
-    {
-        let f = File::create(&tmp)?;
-        let mut enc = GzEncoder::new(f, Compression::default());
-        enc.write_all(data)?;
-        enc.finish()?;
-    }
+    std::fs::write(&tmp, &out)?;
     std::fs::rename(&tmp, path)
 }
 
@@ -148,84 +155,250 @@ fn region_coords(path: &Path) -> (i32, i32) {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let parts: Vec<&str> = stem.split('.').collect();
     if parts.len() == 3 && parts[0] == "r" {
-        let rx = parts[1].parse().unwrap_or(0);
-        let rz = parts[2].parse().unwrap_or(0);
-        (rx, rz)
+        (parts[1].parse().unwrap_or(0), parts[2].parse().unwrap_or(0))
     } else {
         (0, 0)
     }
 }
 
-fn scan_region<F: FnMut(&[u8])>(path: &Path, mut visit: F) {
-    let Ok(mut f) = File::open(path) else { return };
-    let mut header = [0u8; 8192];
-    if f.read_exact(&mut header).is_err() {
-        return;
+fn scan_region_file(
+    path: &Path,
+    dim: &str,
+    targets: &IdSet,
+    vaults: &IdSet,
+    ctx: &mut Ctx,
+    out: &mut Vec<Value>,
+) -> usize {
+    ctx.file_buf.clear();
+    let Ok(mut f) = File::open(path) else { return 0 };
+    if f.read_to_end(&mut ctx.file_buf).is_err() {
+        return 0;
     }
+    if ctx.file_buf.len() < 8192 {
+        return 0;
+    }
+
     let (rx, rz) = region_coords(path);
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-
-    let mut chunk_buf: Vec<u8> = Vec::new();
-    let mut nbt_buf: Vec<u8> = Vec::new();
+    let mut chunks = 0usize;
 
     for idx in 0..1024usize {
-        let b = idx * 4;
-        let offset = ((header[b] as usize) << 16) | ((header[b + 1] as usize) << 8) | (header[b + 2] as usize);
-        let sectors = header[b + 3] as usize;
+        let h = idx * 4;
+        let offset = ((ctx.file_buf[h] as usize) << 16)
+            | ((ctx.file_buf[h + 1] as usize) << 8)
+            | (ctx.file_buf[h + 2] as usize);
+        let sectors = ctx.file_buf[h + 3] as usize;
         if offset == 0 || sectors == 0 {
             continue;
         }
-        if f.seek(SeekFrom::Start((offset * 4096) as u64)).is_err() {
+
+        let start = offset * 4096;
+        if start + 5 > ctx.file_buf.len() {
             continue;
         }
-        let mut lb = [0u8; 5];
-        if f.read_exact(&mut lb).is_err() {
-            continue;
-        }
-        let length = u32::from_be_bytes([lb[0], lb[1], lb[2], lb[3]]) as usize;
+        let length = u32::from_be_bytes([
+            ctx.file_buf[start],
+            ctx.file_buf[start + 1],
+            ctx.file_buf[start + 2],
+            ctx.file_buf[start + 3],
+        ]) as usize;
         if length == 0 {
             continue;
         }
-        let mut ctype = lb[4];
-        let external = ctype & 0x80 != 0;
-        ctype &= 0x7f;
+        let raw_ctype = ctx.file_buf[start + 4];
+        let external = raw_ctype & 0x80 != 0;
+        let ct = raw_ctype & 0x7f;
+        chunks += 1;
 
-        let raw: &[u8] = if external {
+        let nbt_len = if external {
             let lx = idx % 32;
             let lz = idx / 32;
             let cx = rx * 32 + lx as i32;
             let cz = rz * 32 + lz as i32;
             let ext = dir.join(format!("c.{cx}.{cz}.mcc"));
-            match std::fs::read(&ext) {
-                Ok(d) => {
-                    chunk_buf = d;
-                    &chunk_buf[..]
-                }
-                Err(_) => continue,
+            let Ok(ext_data) = std::fs::read(&ext) else { continue };
+            match decompress(&mut ctx.dec, ct, &ext_data, &mut ctx.out_buf) {
+                Some(n) => n,
+                None => continue,
             }
         } else {
-            let payload = length - 1;
-            chunk_buf.resize(payload, 0);
-            if f.read_exact(&mut chunk_buf).is_err() {
-                continue;
+            let ds = start + 5;
+            let de = start + 4 + length;
+            let Some(input) = ctx.file_buf.get(ds..de) else { continue };
+            match decompress(&mut ctx.dec, ct, input, &mut ctx.out_buf) {
+                Some(n) => n,
+                None => continue,
             }
-            &chunk_buf[..]
         };
 
-        nbt_buf.clear();
-        let ok = match ctype {
-            1 => GzDecoder::new(raw).read_to_end(&mut nbt_buf).is_ok(),
-            2 => ZlibDecoder::new(raw).read_to_end(&mut nbt_buf).is_ok(),
-            3 => {
-                nbt_buf.extend_from_slice(raw);
-                true
+        scan_chunk(&ctx.out_buf[..nbt_len], dim, targets, vaults, out);
+    }
+
+    chunks
+}
+
+fn decompress(dec: &mut Decompressor, ct: u8, input: &[u8], out: &mut Vec<u8>) -> Option<usize> {
+    match ct {
+        3 => {
+            out.clear();
+            out.extend_from_slice(input);
+            Some(input.len())
+        }
+        1 | 2 => {
+            let mut cap = out.capacity().max(1 << 20);
+            loop {
+                if out.len() < cap {
+                    out.resize(cap, 0);
+                }
+                let r = if ct == 1 {
+                    dec.gzip_decompress(input, &mut out[..cap])
+                } else {
+                    dec.zlib_decompress(input, &mut out[..cap])
+                };
+                match r {
+                    Ok(n) => return Some(n),
+                    Err(_) if cap < (128 << 20) => cap = cap.saturating_mul(2),
+                    Err(_) => return None,
+                }
             }
-            _ => false,
-        };
-        if ok {
-            visit(&nbt_buf);
+        }
+        _ => None,
+    }
+}
+
+fn read_u16(b: &[u8], i: usize) -> Option<usize> {
+    Some(u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]) as usize)
+}
+
+fn read_i32(b: &[u8], i: usize) -> Option<i64> {
+    Some(i32::from_be_bytes([*b.get(i)?, *b.get(i + 1)?, *b.get(i + 2)?, *b.get(i + 3)?]) as i64)
+}
+
+fn skip_payload(b: &[u8], mut i: usize, t: u8) -> Option<usize> {
+    Some(match t {
+        1 => i + 1,
+        2 => i + 2,
+        3 => i + 4,
+        4 => i + 8,
+        5 => i + 4,
+        6 => i + 8,
+        7 => {
+            let n = read_i32(b, i)? as usize;
+            i + 4 + n
+        }
+        8 => {
+            let n = read_u16(b, i)?;
+            i + 2 + n
+        }
+        9 => {
+            let et = *b.get(i)?;
+            let n = read_i32(b, i + 1)? as usize;
+            i += 5;
+            for _ in 0..n {
+                i = skip_payload(b, i, et)?;
+            }
+            i
+        }
+        10 => loop {
+            let ct = *b.get(i)?;
+            i += 1;
+            if ct == 0 {
+                break i;
+            }
+            let nl = read_u16(b, i)?;
+            i += 2 + nl;
+            i = skip_payload(b, i, ct)?;
+        },
+        11 => {
+            let n = read_i32(b, i)? as usize;
+            i + 4 + 4 * n
+        }
+        12 => {
+            let n = read_i32(b, i)? as usize;
+            i + 4 + 8 * n
+        }
+        _ => return None,
+    })
+}
+
+fn scan_chunk(b: &[u8], dim: &str, targets: &IdSet, vaults: &IdSet, out: &mut Vec<Value>) -> Option<()> {
+    if *b.first()? != 10 {
+        return None;
+    }
+    let mut i = 1usize;
+    let root_name = read_u16(b, i)?;
+    i += 2 + root_name;
+
+    loop {
+        let t = *b.get(i)?;
+        i += 1;
+        if t == 0 {
+            return Some(());
+        }
+        let name_len = read_u16(b, i)?;
+        let name = b.get(i + 2..i + 2 + name_len)?;
+        i += 2 + name_len;
+
+        if t == 9 && name == b"block_entities" {
+            let et = *b.get(i)?;
+            let n = read_i32(b, i + 1)?;
+            i += 5;
+            if et == 10 {
+                for _ in 0..n {
+                    let start = i;
+                    let (end, id_span) = walk_block_entity(b, i)?;
+                    if let Some((s, e)) = id_span {
+                        if let Ok(id) = std::str::from_utf8(&b[s..e]) {
+                            if targets.contains(id) || vaults.contains(id) {
+                                if let Some(v) = parse_span(b, start, end) {
+                                    if let Some(entry) = extract_container(&v, dim, targets, vaults) {
+                                        out.push(entry);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    i = end;
+                }
+            }
+            return Some(());
+        }
+
+        i = skip_payload(b, i, t)?;
+    }
+}
+
+fn walk_block_entity(b: &[u8], mut i: usize) -> Option<(usize, Option<(usize, usize)>)> {
+    let mut id_span = None;
+    loop {
+        let t = *b.get(i)?;
+        i += 1;
+        if t == 0 {
+            return Some((i, id_span));
+        }
+        let name_len = read_u16(b, i)?;
+        let name = b.get(i + 2..i + 2 + name_len)?;
+        i += 2 + name_len;
+
+        if t == 8 && name == b"id" {
+            let sl = read_u16(b, i)?;
+            let s = i + 2;
+            let e = s + sl;
+            let _ = b.get(s..e)?;
+            id_span = Some((s, e));
+            i = e;
+        } else {
+            i = skip_payload(b, i, t)?;
         }
     }
+}
+
+fn parse_span(b: &[u8], s: usize, e: usize) -> Option<Value> {
+    let body = b.get(s..e)?;
+    let mut buf = Vec::with_capacity(3 + body.len());
+    buf.extend_from_slice(&[0x0A, 0x00, 0x00]);
+    buf.extend_from_slice(body);
+    fastnbt::from_bytes(&buf).ok()
 }
 
 fn comp(v: &Value) -> Option<&HashMap<String, Value>> {
@@ -367,12 +540,7 @@ fn canonical_into(v: &Value, out: &mut String) {
     }
 }
 
-fn extract_container(
-    be_val: &Value,
-    dimension: &str,
-    targets: &HashSet<String>,
-    vaults: &HashSet<String>,
-) -> Option<Value> {
+fn extract_container(be_val: &Value, dimension: &str, targets: &IdSet, vaults: &IdSet) -> Option<Value> {
     let be = comp(be_val)?;
     let id = get(be, "id").and_then(as_str)?;
     let is_vault = vaults.contains(id);
@@ -410,10 +578,7 @@ fn extract_container(
                 let Some(item_id) = item.get("id").and_then(as_str) else { continue };
                 let count = item_count(item, 0);
                 let comps = item_components(item);
-                let key = format!(
-                    "{item_id}|{}",
-                    comps.map(canonical).unwrap_or_default()
-                );
+                let key = format!("{item_id}|{}", comps.map(canonical).unwrap_or_default());
                 if !counts.contains_key(&key) {
                     order.push(key.clone());
                     aggregated.insert(key.clone(), (item_id.to_string(), comps.cloned()));
@@ -452,17 +617,17 @@ fn extract_container(
 mod tests {
     use super::*;
 
-    fn cmp(pairs: Vec<(&str, Value)>) -> Value {
+    fn cmp_val(pairs: Vec<(&str, Value)>) -> Value {
         Value::Compound(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
     }
 
-    fn set(ids: &[&str]) -> HashSet<String> {
+    fn set(ids: &[&str]) -> IdSet {
         ids.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
     fn chest_slots_and_count() {
-        let be = cmp(vec![
+        let be = cmp_val(vec![
             ("id", Value::String("minecraft:chest".into())),
             ("x", Value::Int(10)),
             ("y", Value::Int(64)),
@@ -470,12 +635,12 @@ mod tests {
             (
                 "Items",
                 Value::List(vec![
-                    cmp(vec![
+                    cmp_val(vec![
                         ("id", Value::String("minecraft:diamond".into())),
                         ("Slot", Value::Byte(3)),
                         ("count", Value::Int(64)),
                     ]),
-                    cmp(vec![
+                    cmp_val(vec![
                         ("id", Value::String("minecraft:stone".into())),
                         ("Slot", Value::Byte(5)),
                         ("Count", Value::Byte(12)),
@@ -483,42 +648,37 @@ mod tests {
                 ]),
             ),
         ]);
-        let e = extract_container(&be, "minecraft:overworld", &set(&["minecraft:chest"]), &set(&[]))
-            .expect("entry");
+        let e = extract_container(&be, "minecraft:overworld", &set(&["minecraft:chest"]), &set(&[])).unwrap();
         let m = comp(&e).unwrap();
         assert_eq!(as_i64(&m["x"]).unwrap(), 10);
         assert_eq!(m["is_dungeon"], Value::Byte(0));
         assert!(!m.contains_key("is_vault"));
         let items = as_list(&m["items"]).unwrap();
         assert_eq!(items.len(), 2);
-        let first = comp(&items[0]).unwrap();
-        assert_eq!(as_i64(&first["Slot"]).unwrap(), 3);
-        assert_eq!(as_i64(&first["count"]).unwrap(), 64);
-        // Count -> count coercion
-        let second = comp(&items[1]).unwrap();
-        assert_eq!(as_i64(&second["count"]).unwrap(), 12);
+        assert_eq!(as_i64(&comp(&items[0]).unwrap()["Slot"]).unwrap(), 3);
+        assert_eq!(as_i64(&comp(&items[0]).unwrap()["count"]).unwrap(), 64);
+        assert_eq!(as_i64(&comp(&items[1]).unwrap()["count"]).unwrap(), 12);
     }
 
     #[test]
     fn item_without_slot_is_skipped_for_non_vault() {
-        let be = cmp(vec![
+        let be = cmp_val(vec![
             ("id", Value::String("minecraft:barrel".into())),
             (
                 "Items",
-                Value::List(vec![cmp(vec![
+                Value::List(vec![cmp_val(vec![
                     ("id", Value::String("minecraft:dirt".into())),
                     ("count", Value::Int(1)),
                 ])]),
             ),
         ]);
         let e = extract_container(&be, "d", &set(&["minecraft:barrel"]), &set(&[])).unwrap();
-        let m = comp(&e).unwrap();
-        assert_eq!(as_list(&m["items"]).unwrap().len(), 0);
+        assert_eq!(as_list(&comp(&e).unwrap()["items"]).unwrap().len(), 0);
     }
 
     #[test]
     fn empty_vault_is_dropped() {
-        let be = cmp(vec![
+        let be = cmp_val(vec![
             ("id", Value::String("the_vault:vault".into())),
             ("Items", Value::List(vec![])),
         ]);
@@ -527,23 +687,23 @@ mod tests {
 
     #[test]
     fn vault_aggregates_identical_items() {
-        let comps = cmp(vec![("custom", Value::String("x".into()))]);
-        let be = cmp(vec![
+        let comps = cmp_val(vec![("custom", Value::String("x".into()))]);
+        let be = cmp_val(vec![
             ("id", Value::String("the_vault:vault".into())),
             (
                 "Items",
                 Value::List(vec![
-                    cmp(vec![
+                    cmp_val(vec![
                         ("id", Value::String("minecraft:gold_ingot".into())),
                         ("count", Value::Int(5)),
                         ("components", comps.clone()),
                     ]),
-                    cmp(vec![
+                    cmp_val(vec![
                         ("id", Value::String("minecraft:gold_ingot".into())),
                         ("count", Value::Int(3)),
                         ("components", comps.clone()),
                     ]),
-                    cmp(vec![
+                    cmp_val(vec![
                         ("id", Value::String("minecraft:gold_ingot".into())),
                         ("count", Value::Int(7)),
                     ]),
@@ -554,7 +714,6 @@ mod tests {
         let m = comp(&e).unwrap();
         assert_eq!(m["is_vault"], Value::Byte(1));
         let items = as_list(&m["items"]).unwrap();
-        // two groups: with-components (5+3=8) and without (7)
         assert_eq!(items.len(), 2);
         let with = items
             .iter()
@@ -564,47 +723,53 @@ mod tests {
     }
 
     fn zlib(data: &[u8]) -> Vec<u8> {
-        use flate2::write::ZlibEncoder;
-        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
-        enc.write_all(data).unwrap();
-        enc.finish().unwrap()
+        let mut c = Compressor::new(CompressionLvl::default());
+        let bound = c.zlib_compress_bound(data.len());
+        let mut out = vec![0u8; bound];
+        let n = c.zlib_compress(data, &mut out).unwrap();
+        out.truncate(n);
+        out
     }
 
     #[test]
     fn region_reader_roundtrip() {
-        // one chunk with a chest block entity, placed at local (0,0)
-        let chunk = cmp(vec![(
+        let chunk = cmp_val(vec![(
             "block_entities",
-            Value::List(vec![cmp(vec![
-                ("id", Value::String("minecraft:chest".into())),
-                ("x", Value::Int(1)),
-                ("y", Value::Int(2)),
-                ("z", Value::Int(3)),
-                (
-                    "Items",
-                    Value::List(vec![cmp(vec![
-                        ("id", Value::String("minecraft:emerald".into())),
-                        ("Slot", Value::Byte(0)),
-                        ("count", Value::Int(9)),
-                    ])]),
-                ),
-            ])]),
+            Value::List(vec![
+                cmp_val(vec![
+                    ("id", Value::String("minecraft:furnace".into())),
+                    ("x", Value::Int(0)),
+                    ("y", Value::Int(0)),
+                    ("z", Value::Int(0)),
+                ]),
+                cmp_val(vec![
+                    ("id", Value::String("minecraft:chest".into())),
+                    ("x", Value::Int(1)),
+                    ("y", Value::Int(2)),
+                    ("z", Value::Int(3)),
+                    (
+                        "Items",
+                        Value::List(vec![cmp_val(vec![
+                            ("id", Value::String("minecraft:emerald".into())),
+                            ("Slot", Value::Byte(0)),
+                            ("count", Value::Int(9)),
+                        ])]),
+                    ),
+                ]),
+            ]),
         )]);
         let nbt = fastnbt::to_bytes(&chunk).unwrap();
         let comp_data = zlib(&nbt);
 
         let mut file = vec![0u8; 8192];
-        // chunk at index 0 -> sector offset 2, sector count 1
         file[0] = 0;
         file[1] = 0;
         file[2] = 2;
         file[3] = 1;
-        // sector 2 payload: 4-byte length + 1 compression byte + data
         let len = (comp_data.len() + 1) as u32;
         file.extend_from_slice(&len.to_be_bytes());
-        file.push(2); // zlib
+        file.push(2);
         file.extend_from_slice(&comp_data);
-        // pad to sector boundary
         while file.len() % 4096 != 0 {
             file.push(0);
         }
@@ -614,26 +779,44 @@ mod tests {
         let mca = dir.join("r.0.0.mca");
         std::fs::write(&mca, &file).unwrap();
 
-        let mut chunks = 0;
+        let mut ctx = Ctx::new();
         let mut entries: Vec<Value> = Vec::new();
-        scan_region(&mca, |nbt| {
-            chunks += 1;
-            let parsed: ChunkBlockEntities = fastnbt::from_bytes(nbt).unwrap();
-            for be in &parsed.block_entities {
-                if let Some(e) =
-                    extract_container(be, "minecraft:overworld", &set(&["minecraft:chest"]), &set(&[]))
-                {
-                    entries.push(e);
-                }
-            }
-        });
+        let chunks = scan_region_file(&mca, "minecraft:overworld", &set(&["minecraft:chest"]), &set(&[]), &mut ctx, &mut entries);
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(chunks, 1);
         assert_eq!(entries.len(), 1);
         let m = comp(&entries[0]).unwrap();
         assert_eq!(as_str(&m["id"]).unwrap(), "minecraft:chest");
-        let items = as_list(&m["items"]).unwrap();
-        assert_eq!(as_i64(&comp(&items[0]).unwrap()["count"]).unwrap(), 9);
+        assert_eq!(as_i64(&comp(&as_list(&m["items"]).unwrap()[0]).unwrap()["count"]).unwrap(), 9);
+    }
+
+    #[test]
+    fn scan_chunk_skips_non_targets() {
+        let chunk = cmp_val(vec![(
+            "block_entities",
+            Value::List(vec![
+                cmp_val(vec![("id", Value::String("minecraft:sign".into()))]),
+                cmp_val(vec![
+                    ("id", Value::String("minecraft:barrel".into())),
+                    ("x", Value::Int(4)),
+                    ("y", Value::Int(5)),
+                    ("z", Value::Int(6)),
+                    (
+                        "Items",
+                        Value::List(vec![cmp_val(vec![
+                            ("id", Value::String("minecraft:gold_ingot".into())),
+                            ("Slot", Value::Byte(1)),
+                            ("count", Value::Int(2)),
+                        ])]),
+                    ),
+                ]),
+            ]),
+        )]);
+        let nbt = fastnbt::to_bytes(&chunk).unwrap();
+        let mut out = Vec::new();
+        scan_chunk(&nbt, "d", &set(&["minecraft:barrel"]), &set(&[]), &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(as_str(&comp(&out[0]).unwrap()["id"]).unwrap(), "minecraft:barrel");
     }
 }
