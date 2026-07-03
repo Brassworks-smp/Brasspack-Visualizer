@@ -7,26 +7,12 @@ use std::sync::Arc;
 
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions};
 
-pub fn assets_dir() -> String {
-    let mut candidates = vec![PathBuf::from("assets")];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("assets"));
-            candidates.push(dir.join("../Resources/assets"));
-        }
-    }
-    for c in &candidates {
-        if c.join("font.json").exists() {
-            return c.to_string_lossy().into_owned();
-        }
-    }
-    "assets".to_string()
-}
-
-fn find_zip(assets_dir: &str) -> Option<PathBuf> {
+// Best-effort search for a brass_atlas.zip next to the program, used only by
+// the CLI helpers. The GUI has the user pick the file explicitly.
+pub fn find_zip() -> Option<PathBuf> {
     let mut candidates = vec![
-        PathBuf::from(assets_dir).join("brass_atlas.zip"),
         PathBuf::from("brass_atlas.zip"),
+        PathBuf::from("assets").join("brass_atlas.zip"),
     ];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -65,9 +51,8 @@ pub struct Atlas {
 }
 
 impl Atlas {
-    pub fn load(assets_dir: &str) -> Result<Atlas, String> {
-        let zip_path = find_zip(assets_dir).ok_or("brass_atlas.zip not found")?;
-        let bytes = std::fs::read(&zip_path).map_err(|e| format!("brass_atlas.zip: {e}"))?;
+    pub fn load(zip_path: &str) -> Result<Atlas, String> {
+        let bytes = std::fs::read(zip_path).map_err(|e| format!("brass_atlas.zip: {e}"))?;
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("zip open: {e}"))?;
 
         let manifest = {
@@ -77,8 +62,8 @@ impl Atlas {
             parse_manifest(&raw)?
         };
 
-        let glint_src = image::open(format!("{assets_dir}/enchanted_glint_item.png"))
-            .ok()
+        let glint_src = crate::assets::get("enchanted_glint_item.png")
+            .and_then(|b| image::load_from_memory(b).ok())
             .map(|i| i.to_rgba8());
 
         Ok(Atlas {

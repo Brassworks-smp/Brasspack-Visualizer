@@ -19,11 +19,10 @@ pub struct McFont {
 }
 
 impl McFont {
-    pub fn load(assets_dir: &str) -> Result<McFont, String> {
+    pub fn load() -> Result<McFont, String> {
+        let font_json = crate::assets::get("font.json").ok_or("embedded font.json missing")?;
         let cfg: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(format!("{assets_dir}/font.json"))
-                .map_err(|e| format!("font.json: {e}"))?)
-                .map_err(|e| format!("font.json: {e}"))?;
+            serde_json::from_slice(font_json).map_err(|e| format!("font.json: {e}"))?;
         let rows: Vec<String> = cfg["providers"]
             .as_array()
             .and_then(|a| a.iter().find(|p| p["type"] == "bitmap"))
@@ -31,7 +30,8 @@ impl McFont {
             .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
             .ok_or("no bitmap provider in font.json")?;
 
-        let sheet = image::open(format!("{assets_dir}/ascii.png"))
+        let ascii = crate::assets::get("ascii.png").ok_or("embedded ascii.png missing")?;
+        let sheet = image::load_from_memory(ascii)
             .map_err(|e| format!("ascii.png: {e}"))?
             .to_rgba8();
         let (sw, sh) = sheet.dimensions();

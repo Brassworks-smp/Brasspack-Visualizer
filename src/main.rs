@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod assets;
 mod model;
 mod parse;
 mod profiles;
@@ -253,9 +254,10 @@ fn png_report(path: &str, out: Option<&str>) {
         parse::nbt::load_backpacks(path)
     }
     .expect("parse");
-    let dir = render::atlas::assets_dir();
-    let atlas = render::atlas::Atlas::load(&dir).expect("atlas");
-    let font = render::export::McFont::load(&dir).expect("font");
+    let zip = render::atlas::find_zip()
+        .expect("brass_atlas.zip not found next to the program");
+    let atlas = render::atlas::Atlas::load(&zip.to_string_lossy()).expect("atlas");
+    let font = render::export::McFont::load().expect("font");
     let idx = entries
         .iter()
         .enumerate()

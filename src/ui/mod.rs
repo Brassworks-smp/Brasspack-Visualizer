@@ -22,7 +22,7 @@ pub(crate) const GOLD: Color32 = Color32::from_rgb(212, 155, 36);
 const ERRC: Color32 = Color32::from_rgb(220, 90, 80);
 
 enum Msg {
-    Assets(Result<(Atlas, McFont), String>),
+    Atlas(Result<Atlas, String>),
     Data(u64, Result<Store, String>),
     Profile(String, Result<Fetched, String>),
 }
@@ -102,7 +102,9 @@ pub struct App {
     filters: Filters,
     mode: Mode,
     slot: f32,
-    loading_assets: bool,
+    loading_atlas: bool,
+    atlas_path: Option<String>,
+    atlas_error: Option<String>,
     status: String,
     error: Option<String>,
     clipboard: Option<arboard::Clipboard>,
@@ -152,18 +154,13 @@ impl App {
     pub fn new(ctx: egui::Context) -> Self {
         let (tx, rx) = channel();
 
-        let atx = tx.clone();
-        let actx = ctx.clone();
-        std::thread::spawn(move || {
-            let res = (|| {
-                let dir = crate::render::atlas::assets_dir();
-                let atlas = Atlas::load(&dir)?;
-                let font = McFont::load(&dir)?;
-                Ok((atlas, font))
-            })();
-            let _ = atx.send(Msg::Assets(res));
-            actx.request_repaint();
-        });
+        // The font/glint assets are embedded in the binary, so the font loads
+        // instantly. The item-sprite atlas (brass_atlas.zip) is picked by the
+        // user at runtime.
+        let (font, font_err) = match McFont::load() {
+            Ok(f) => (Some(f), None),
+            Err(e) => (None, Some(format!("Font load failed: {e}"))),
+        };
 
         let settings = Settings::load();
         let mut app = App {
@@ -171,15 +168,17 @@ impl App {
             tx,
             rx,
             atlas: None,
-            font: None,
+            font,
             sources: Vec::new(),
             filtered: Vec::new(),
             filters: Filters::default(),
             mode: Mode::from_label(&settings.mode),
             slot: settings.zoom.clamp(24.0, 64.0),
-            loading_assets: true,
-            status: "Loading item atlas…".into(),
-            error: None,
+            loading_atlas: false,
+            atlas_path: None,
+            atlas_error: None,
+            status: "Select a brass_atlas.zip to show item sprites.".into(),
+            error: font_err,
             clipboard: arboard::Clipboard::new().ok(),
             toast: None,
             hovering_file: false,
@@ -198,7 +197,33 @@ impl App {
                 app.add_source(f.path.clone(), Mode::from_label(&f.mode), f.enabled);
             }
         }
+        if !settings.atlas.is_empty() && std::path::Path::new(&settings.atlas).exists() {
+            app.load_atlas(settings.atlas.clone());
+        }
         app
+    }
+
+    fn load_atlas(&mut self, path: String) {
+        self.atlas_path = Some(path.clone());
+        self.atlas_error = None;
+        self.loading_atlas = true;
+        let tx = self.tx.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let res = Atlas::load(&path);
+            let _ = tx.send(Msg::Atlas(res));
+            ctx.request_repaint();
+        });
+    }
+
+    fn pick_atlas(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Brass atlas", &["zip"])
+            .pick_file()
+        {
+            self.load_atlas(path.display().to_string());
+            self.save_settings();
+        }
     }
 
     pub fn request_open(&mut self, path: String) {
@@ -356,6 +381,7 @@ impl App {
             files,
             zoom: self.slot,
             mode: self.mode.label().to_string(),
+            atlas: self.atlas_path.clone().unwrap_or_default(),
         }
         .save();
     }
@@ -368,15 +394,15 @@ impl App {
         let mut got_data = false;
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Msg::Assets(Ok((atlas, font))) => {
+                Msg::Atlas(Ok(atlas)) => {
                     self.atlas = Some(atlas);
-                    self.font = Some(font);
-                    self.loading_assets = false;
+                    self.loading_atlas = false;
+                    self.atlas_error = None;
                     self.status = "Ready.".into();
                 }
-                Msg::Assets(Err(e)) => {
-                    self.loading_assets = false;
-                    self.error = Some(format!("Asset load failed: {e}"));
+                Msg::Atlas(Err(e)) => {
+                    self.loading_atlas = false;
+                    self.atlas_error = Some(e);
                 }
                 Msg::Data(id, res) => {
                     if let Some(pos) = self.sources.iter().position(|s| s.id == id) {
@@ -654,12 +680,66 @@ impl eframe::App for App {
         });
 
         let mut add_clicked = false;
+        let mut atlas_clicked = false;
         let mut sources_changed = false;
         egui::SidePanel::left("sources")
             .resizable(true)
             .default_width(240.0)
             .show(ctx, |ui| {
                 ui.add_space(6.0);
+                ui.heading(egui::RichText::new("Sprites").color(ACCENT));
+                ui.add_space(3.0);
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(33, 35, 43))
+                    .rounding(Rounding::same(6.0))
+                    .inner_margin(egui::Margin::same(7.0))
+                    .show(ui, |ui| {
+                        if self.loading_atlas {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Spinner::new().size(14.0));
+                                ui.label(egui::RichText::new("loading atlas…").weak().size(11.0));
+                            });
+                        } else if let Some(p) = self.atlas_path.clone() {
+                            let name = filename(&p);
+                            if self.atlas.is_some() {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&name).color(ACCENT).strong(),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(&p);
+                            } else {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(&name).color(ERRC))
+                                        .truncate(),
+                                )
+                                .on_hover_text(&p);
+                            }
+                            if let Some(e) = &self.atlas_error {
+                                ui.label(egui::RichText::new(e).color(ERRC).size(11.0));
+                            }
+                        } else {
+                            ui.label(
+                                egui::RichText::new("No atlas selected").weak().size(12.0),
+                            );
+                            ui.label(
+                                egui::RichText::new("Item icons need a brass_atlas.zip")
+                                    .weak()
+                                    .size(11.0),
+                            );
+                        }
+                        let btn = if self.atlas.is_some() {
+                            "Change atlas…"
+                        } else {
+                            "Select brass_atlas.zip…"
+                        };
+                        if ui.button(btn).clicked() {
+                            atlas_clicked = true;
+                        }
+                    });
+
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.heading(egui::RichText::new("Files").color(ACCENT));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -735,6 +815,9 @@ impl eframe::App for App {
                     sources_changed = true;
                 }
             });
+        if atlas_clicked {
+            self.pick_atlas();
+        }
         if add_clicked {
             if let Some(paths) = rfd::FileDialog::new()
                 .add_filter("Backpacks / Containers / Players", &["dat", "nbt", "json"])
@@ -755,7 +838,7 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let any_loading = self.loading_assets || self.sources.iter().any(|s| s.loading);
+                let any_loading = self.loading_atlas || self.sources.iter().any(|s| s.loading);
                 if any_loading {
                     ui.add(egui::Spinner::new().size(14.0));
                 }
@@ -769,15 +852,18 @@ impl eframe::App for App {
 
         let mut actions: Vec<Action> = Vec::new();
         let mut do_load = false;
+        let mut pick_atlas = false;
         let mut animating = false;
         let gframe = ((ctx.input(|i| i.time) * 12.0) as usize) % GLINT_FRAMES;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.atlas.is_none() {
                 if let Some(err) = &self.error {
-                    center_message(ui, "⚠", err, ERRC);
+                    center_message(ui, "!", err, ERRC);
+                } else if self.loading_atlas {
+                    center_spinner(ui, "Loading item sprites…");
                 } else {
-                    center_spinner(ui, "Loading item atlas…");
+                    pick_atlas = atlas_prompt(ui, self.atlas_error.as_deref());
                 }
                 return;
             }
@@ -893,6 +979,10 @@ impl eframe::App for App {
                     }
                 });
         });
+
+        if pick_atlas {
+            self.pick_atlas();
+        }
 
         if do_load {
             if let Some(paths) = rfd::FileDialog::new()
@@ -1085,7 +1175,7 @@ impl eframe::App for App {
         if dirty {
             self.save_settings();
         }
-        if self.loading_assets || animating || self.sources.iter().any(|s| s.loading) {
+        if self.loading_atlas || animating || self.sources.iter().any(|s| s.loading) {
             ctx.request_repaint();
         }
     }
@@ -1093,6 +1183,41 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_settings();
     }
+}
+
+fn atlas_prompt(ui: &mut egui::Ui, err: Option<&str>) -> bool {
+    let mut clicked = false;
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() * 0.3);
+        ui.label(egui::RichText::new("Item sprites not loaded").size(20.0).strong());
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(
+                "Pick your brass_atlas.zip to show item icons.\nYou can also select it from the Sprites panel on the left.",
+            )
+            .size(13.0)
+            .weak(),
+        );
+        if let Some(e) = err {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(format!("Last attempt failed: {e}")).color(ERRC).size(12.0));
+        }
+        ui.add_space(14.0);
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new("Select brass_atlas.zip…").size(15.0).strong(),
+                )
+                .min_size(Vec2::new(220.0, 40.0))
+                .fill(ACCENT.linear_multiply(0.85))
+                .rounding(Rounding::same(9.0)),
+            )
+            .clicked()
+        {
+            clicked = true;
+        }
+    });
+    clicked
 }
 
 fn search_help_ui(ui: &mut egui::Ui) {

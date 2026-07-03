@@ -22,6 +22,8 @@ pub struct Settings {
     pub zoom: f32,
     #[serde(default)]
     pub mode: String,
+    #[serde(default)]
+    pub atlas: String,
 }
 
 fn default_zoom() -> f32 {
@@ -34,6 +36,7 @@ impl Default for Settings {
             files: Vec::new(),
             zoom: 34.0,
             mode: "Auto".into(),
+            atlas: String::new(),
         }
     }
 }
