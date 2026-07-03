@@ -1,29 +1,26 @@
 
-use rayon::prelude::*;
 use serde_json::Value as J;
 
-use crate::parse::containers::item_from_json;
+use crate::parse::containers::{item_from_json, RawElement};
 use crate::model::{CopyAction, Entry, EntryKind, Item};
 
-pub fn entries_from(list: &[J]) -> Vec<Entry> {
-    list.par_iter().flat_map(parse_player).collect()
-}
-
-fn parse_player(p: &J) -> Vec<Entry> {
-    let name = p
-        .get("name")
+pub(crate) fn build_player(el: &RawElement) -> Vec<Entry> {
+    let name = el
+        .name
+        .as_ref()
         .and_then(|v| v.as_str())
         .unwrap_or("Unknown")
         .to_string();
-    let uuid = p
-        .get("uuid")
+    let uuid = el
+        .uuid
+        .as_ref()
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
     let mut out = Vec::new();
 
-    if let Some(inv @ J::Array(items_json)) = p.get("inventory") {
+    if let Some(inv @ J::Array(items_json)) = el.inventory.as_ref() {
         let items: Vec<Item> = items_json
             .iter()
             .filter_map(|raw| {
@@ -37,7 +34,7 @@ fn parse_player(p: &J) -> Vec<Entry> {
         }
     }
 
-    if let Some(ec @ J::Array(items_json)) = p.get("ender_chest") {
+    if let Some(ec @ J::Array(items_json)) = el.ender_chest.as_ref() {
         let items: Vec<Item> = items_json.iter().filter_map(|raw| item_from_json(raw, 0)).collect();
         if !items.is_empty() {
             out.push(make_entry(&name, &uuid, "Ender Chest", items, "minecraft:ender_chest", ec));

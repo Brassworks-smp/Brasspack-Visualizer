@@ -1,5 +1,10 @@
 
+use std::fs::File;
+use std::io::BufReader;
+
 use rayon::prelude::*;
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde::Deserialize;
 use serde_json::Value as J;
 
 use crate::model::{prettify_id, CopyAction, Entry, EntryKind, Item};
@@ -11,75 +16,204 @@ pub enum JsonKind {
     Players,
 }
 
+#[derive(Default, Deserialize)]
+pub(crate) struct RawElement {
+    pub id: Option<J>,
+    pub x: Option<J>,
+    pub y: Option<J>,
+    pub z: Option<J>,
+    pub dimension: Option<J>,
+    pub is_dungeon: Option<J>,
+    pub items: Option<J>,
+    pub name: Option<J>,
+    pub uuid: Option<J>,
+    pub inventory: Option<J>,
+    pub ender_chest: Option<J>,
+}
+
 pub fn load_json(path: &str, forced: Option<JsonKind>) -> Result<Vec<Entry>, String> {
-    let raw = std::fs::read_to_string(path).map_err(|e| format!("read: {e}"))?;
-    let root: J = serde_json::from_str(&raw).map_err(|e| format!("json parse: {e}"))?;
-
-    let list: &[J] = match &root {
-        J::Array(a) => a.as_slice(),
-        J::Object(o) => match o
-            .get("containers")
-            .or_else(|| o.get("players"))
-            .and_then(|v| v.as_array())
-        {
-            Some(a) => a.as_slice(),
-            None => std::slice::from_ref(&root),
-        },
-        _ => return Err("unexpected JSON shape".into()),
-    };
-
-    let kind = forced.unwrap_or_else(|| detect_kind(list));
-    let entries = match kind {
-        JsonKind::Players => crate::parse::players::entries_from(list),
-        JsonKind::Containers => list.par_iter().filter_map(parse_container).collect(),
-    };
-    Ok(entries)
+    let file = File::open(path).map_err(|e| format!("read: {e}"))?;
+    let reader = BufReader::with_capacity(1 << 20, file);
+    let mut de = serde_json::Deserializer::from_reader(reader);
+    RootSeed { forced }
+        .deserialize(&mut de)
+        .map_err(|e| format!("json parse: {e}"))
 }
 
 pub fn load_containers(path: &str) -> Result<Vec<Entry>, String> {
     load_json(path, None)
 }
 
-fn detect_kind(list: &[J]) -> JsonKind {
-    if let Some(J::Object(o)) = list.first() {
-        if o.contains_key("ender_chest") || (o.contains_key("uuid") && o.contains_key("inventory")) {
-            return JsonKind::Players;
-        }
-    }
-    JsonKind::Containers
+const BATCH: usize = 4096;
+
+struct RootSeed {
+    forced: Option<JsonKind>,
 }
 
-fn str_field(c: &J, key: &str) -> Option<String> {
-    match c.get(key)? {
+impl<'de> DeserializeSeed<'de> for RootSeed {
+    type Value = Vec<Entry>;
+    fn deserialize<D>(self, d: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        d.deserialize_any(RootVisitor { forced: self.forced })
+    }
+}
+
+struct RootVisitor {
+    forced: Option<JsonKind>,
+}
+
+impl<'de> Visitor<'de> for RootVisitor {
+    type Value = Vec<Entry>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a containers/players array, wrapper object, or single element")
+    }
+
+    fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        drain_seq(seq, self.forced)
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut result: Option<Vec<Entry>> = None;
+        let mut leftover = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if result.is_none() && (key == "containers" || key == "players") {
+                result = Some(map.next_value_seed(ArraySeed { forced: self.forced })?);
+            } else {
+                leftover.insert(key, map.next_value::<J>()?);
+            }
+        }
+        if let Some(entries) = result {
+            return Ok(entries);
+        }
+        let el: RawElement =
+            serde_json::from_value(J::Object(leftover)).map_err(serde::de::Error::custom)?;
+        let kind = self.forced.unwrap_or_else(|| detect_kind(&el));
+        Ok(build_one(&el, kind))
+    }
+}
+
+struct ArraySeed {
+    forced: Option<JsonKind>,
+}
+
+impl<'de> DeserializeSeed<'de> for ArraySeed {
+    type Value = Vec<Entry>;
+    fn deserialize<D>(self, d: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        d.deserialize_seq(ArrayVisitor { forced: self.forced })
+    }
+}
+
+struct ArrayVisitor {
+    forced: Option<JsonKind>,
+}
+
+impl<'de> Visitor<'de> for ArrayVisitor {
+    type Value = Vec<Entry>;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("an array of containers/players")
+    }
+    fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        drain_seq(seq, self.forced)
+    }
+}
+
+fn drain_seq<'de, A>(mut seq: A, forced: Option<JsonKind>) -> Result<Vec<Entry>, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let mut out: Vec<Entry> = Vec::new();
+    let mut kind = forced;
+    let mut batch: Vec<RawElement> = Vec::with_capacity(BATCH);
+    while let Some(el) = seq.next_element::<RawElement>()? {
+        if kind.is_none() {
+            kind = Some(detect_kind(&el));
+        }
+        batch.push(el);
+        if batch.len() >= BATCH {
+            flush_batch(&mut batch, kind.unwrap(), &mut out);
+        }
+    }
+    flush_batch(&mut batch, kind.unwrap_or(JsonKind::Containers), &mut out);
+    Ok(out)
+}
+
+fn flush_batch(batch: &mut Vec<RawElement>, kind: JsonKind, out: &mut Vec<Entry>) {
+    if batch.is_empty() {
+        return;
+    }
+    let mut entries: Vec<Entry> = match kind {
+        JsonKind::Containers => batch.par_iter().filter_map(build_container).collect(),
+        JsonKind::Players => batch
+            .par_iter()
+            .flat_map(crate::parse::players::build_player)
+            .collect(),
+    };
+    out.append(&mut entries);
+    batch.clear();
+}
+
+fn build_one(el: &RawElement, kind: JsonKind) -> Vec<Entry> {
+    match kind {
+        JsonKind::Containers => build_container(el).into_iter().collect(),
+        JsonKind::Players => crate::parse::players::build_player(el),
+    }
+}
+
+fn detect_kind(el: &RawElement) -> JsonKind {
+    if el.ender_chest.is_some() || (el.uuid.is_some() && el.inventory.is_some()) {
+        JsonKind::Players
+    } else {
+        JsonKind::Containers
+    }
+}
+
+fn j_str(v: &Option<J>) -> Option<String> {
+    match v.as_ref()? {
         J::String(s) => Some(s.clone()),
         J::Number(n) => Some(n.to_string()),
         _ => None,
     }
 }
 
-fn parse_container(c: &J) -> Option<Entry> {
-    let id = str_field(c, "id").unwrap_or_else(|| "minecraft:chest".into());
-    let x = str_field(c, "x").unwrap_or_else(|| "?".into());
-    let y = str_field(c, "y").unwrap_or_else(|| "?".into());
-    let z = str_field(c, "z").unwrap_or_else(|| "?".into());
-    let dimension = str_field(c, "dimension").unwrap_or_else(|| "minecraft:overworld".into());
-    let is_dungeon = c
-        .get("is_dungeon")
+fn build_container(el: &RawElement) -> Option<Entry> {
+    let id = j_str(&el.id).unwrap_or_else(|| "minecraft:chest".into());
+    let x = j_str(&el.x).unwrap_or_else(|| "?".into());
+    let y = j_str(&el.y).unwrap_or_else(|| "?".into());
+    let z = j_str(&el.z).unwrap_or_else(|| "?".into());
+    let dimension = j_str(&el.dimension).unwrap_or_else(|| "minecraft:overworld".into());
+    let is_dungeon = el
+        .is_dungeon
+        .as_ref()
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let items = parse_items(c.get("items"));
+    let items = parse_items(el.items.as_ref());
 
     let coords = match (
-        c.get("x").and_then(coord),
-        c.get("y").and_then(coord),
-        c.get("z").and_then(coord),
+        el.x.as_ref().and_then(coord),
+        el.y.as_ref().and_then(coord),
+        el.z.as_ref().and_then(coord),
     ) {
         (Some(x), Some(y), Some(z)) => Some((x, y, z)),
         _ => None,
     };
     let mut nbt_blob = String::new();
-    if let Some(items_json) = c.get("items") {
+    if let Some(items_json) = el.items.as_ref() {
         collect_nbt(items_json, &mut nbt_blob);
     }
 
