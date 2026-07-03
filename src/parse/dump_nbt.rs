@@ -2,12 +2,24 @@ use fastnbt::Value;
 
 use crate::model::{prettify_id, Entry, EntryKind, Item};
 use crate::parse::nbt::{as_i64, as_list, as_str, get, item_from_nbt};
-use crate::parse::players::remap_inventory_slot;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DumpKind {
     Containers,
     Players,
+}
+
+fn remap_inventory_slot(slot: i32) -> i32 {
+    match slot {
+        103 => 0,
+        102 => 1,
+        101 => 2,
+        100 => 3,
+        -106 => 4,
+        0..=8 => 36 + slot,
+        9..=35 => slot,
+        other => other,
+    }
 }
 
 fn read_u16(b: &[u8], i: usize) -> Option<usize> {

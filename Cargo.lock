@@ -320,7 +320,6 @@ dependencies = [
  "fastnbt",
  "flate2",
  "image",
- "memmap2",
  "rayon",
  "rfd",
  "serde",

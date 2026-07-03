@@ -129,27 +129,13 @@ fn filename(path: &str) -> String {
 }
 
 fn open_store(path: &str, mode: Mode) -> Result<Store, String> {
-    use crate::parse::containers::JsonKind;
     use crate::parse::dump_nbt::DumpKind;
     use crate::store::Load;
-    let is_json = path.to_lowercase().ends_with(".json");
     let load = match mode {
         Mode::Auto => Load::auto(path),
         Mode::Backpacks => Load::Backpacks,
-        Mode::Containers => {
-            if is_json {
-                Load::Json(Some(JsonKind::Containers))
-            } else {
-                Load::Nbt(Some(DumpKind::Containers))
-            }
-        }
-        Mode::Players => {
-            if is_json {
-                Load::Json(Some(JsonKind::Players))
-            } else {
-                Load::Nbt(Some(DumpKind::Players))
-            }
-        }
+        Mode::Containers => Load::Nbt(Some(DumpKind::Containers)),
+        Mode::Players => Load::Nbt(Some(DumpKind::Players)),
     };
     Store::open(path, load)
 }
@@ -557,7 +543,7 @@ impl eframe::App for App {
 
                 if ui.button("Load files…").clicked() {
                     if let Some(paths) = rfd::FileDialog::new()
-                        .add_filter("Backpacks / Containers / Players", &["dat", "nbt", "json"])
+                        .add_filter("Backpacks / Containers / Players", &["dat", "nbt"])
                         .pick_files()
                     {
                         let mode = self.mode;
@@ -821,7 +807,7 @@ impl eframe::App for App {
         }
         if add_clicked {
             if let Some(paths) = rfd::FileDialog::new()
-                .add_filter("Backpacks / Containers / Players", &["dat", "nbt", "json"])
+                .add_filter("Backpacks / Containers / Players", &["dat", "nbt"])
                 .pick_files()
             {
                 let mode = self.mode;
@@ -984,7 +970,7 @@ impl eframe::App for App {
 
         if do_load {
             if let Some(paths) = rfd::FileDialog::new()
-                .add_filter("Backpacks / Containers / Players", &["dat", "nbt", "json"])
+                .add_filter("Backpacks / Containers / Players", &["dat", "nbt"])
                 .pick_files()
             {
                 let mode = self.mode;
@@ -1314,8 +1300,8 @@ fn welcome_screen(ui: &mut egui::Ui) -> bool {
         ui.add_space(6.0);
         for (icon, name, desc) in [
             ("•", "sophisticatedbackpacks.dat", "backpacks - items, upgrades, enchants"),
-            ("•", "*_container_dump.json", "world containers - chests, barrels, shulkers"),
-            ("•", "*_player_dump.json", "players - inventory + ender chest"),
+            ("•", "*_container_dump.nbt", "world containers - chests, barrels, shulkers"),
+            ("•", "*_player_dump.nbt", "players - inventory + ender chest"),
         ] {
             ui.horizontal(|ui| {
                 ui.add_space(ui.available_width() * 0.5 - 170.0);

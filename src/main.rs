@@ -93,12 +93,7 @@ fn main() -> eframe::Result<()> {
 
 fn parse_report(path: &str) {
     let t = std::time::Instant::now();
-    let is_json = path.to_lowercase().ends_with(".json");
-    let res = if is_json {
-        parse::containers::load_containers(path)
-    } else {
-        parse::nbt::load_backpacks(path)
-    };
+    let res = parse::nbt::load_backpacks(path);
     match res {
         Ok(entries) => {
             let items: usize = entries.iter().map(|e| e.items.len()).sum();
@@ -153,13 +148,7 @@ fn parse_report(path: &str) {
 
 fn verify_store(path: &str) {
     use search::{DungeonFilter, EnchOp, Filters, TextCat};
-    let is_backpack = !path.to_lowercase().ends_with(".json");
-    let eager = if is_backpack {
-        parse::nbt::load_backpacks(path)
-    } else {
-        parse::containers::load_json(path, None)
-    }
-    .expect("eager parse");
+    let eager = parse::nbt::load_backpacks(path).expect("eager parse");
     let store = store::Store::open(path, store::Load::auto(path)).expect("store open");
 
     println!("counts: eager={} store={}", eager.len(), store.len());
@@ -250,13 +239,7 @@ fn verify_store(path: &str) {
 }
 
 fn png_report(path: &str, out: Option<&str>) {
-    let is_json = path.to_lowercase().ends_with(".json");
-    let entries = if is_json {
-        parse::containers::load_containers(path)
-    } else {
-        parse::nbt::load_backpacks(path)
-    }
-    .expect("parse");
+    let entries = parse::nbt::load_backpacks(path).expect("parse");
     let zip = render::atlas::find_zip()
         .expect("brass_atlas.zip not found next to the program");
     let atlas = render::atlas::Atlas::load(&zip.to_string_lossy()).expect("atlas");

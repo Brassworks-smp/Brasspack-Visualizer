@@ -10,8 +10,8 @@ tooltips, nested container contents, and real 3D player heads.
 ## What it reads
 
 - `sophisticatedbackpacks.dat` - your backpacks (from `world/data/` in your save)
-- `*_container_dump.json` - world containers like chests, barrels, and shulkers
-- `*_player_dump.json` - player inventories and ender chests
+- `*_container_dump.nbt` - world containers like chests, barrels, and shulkers
+- `*_player_dump.nbt` - player inventories and ender chests
 
 Just drag any of these onto the window, or use the "Load files" button. You can
 load several at once - loading the backpacks `.dat` alongside a dump also lets

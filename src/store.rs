@@ -1,27 +1,19 @@
 use std::collections::HashMap;
-use std::fs::File;
 use std::sync::{Arc, Mutex};
 
-use memmap2::Mmap;
 use rayon::prelude::*;
 
 use crate::model::{Entry, EntryKind, Item};
-use crate::parse::containers::{self, JsonKind, RawElement};
 use crate::parse::dump_nbt::{self, DumpKind};
 
 pub enum Load {
     Backpacks,
-    Json(Option<JsonKind>),
     Nbt(Option<DumpKind>),
 }
 
 impl Load {
-    pub fn auto(path: &str) -> Load {
-        if path.to_lowercase().ends_with(".json") {
-            Load::Json(None)
-        } else {
-            Load::Nbt(None)
-        }
+    pub fn auto(_path: &str) -> Load {
+        Load::Nbt(None)
     }
 }
 
@@ -154,12 +146,6 @@ pub enum TextSource<'a> {
 }
 
 enum Backend {
-    Json {
-        mmap: Arc<Mmap>,
-        spans: Vec<(u32, u32)>,
-        locs: Vec<(u32, u8)>,
-        kind: JsonKind,
-    },
     Nbt {
         bytes: Arc<Vec<u8>>,
         spans: Vec<(u32, u32)>,
@@ -185,7 +171,6 @@ impl Store {
     pub fn open(path: &str, load: Load) -> Result<Store, String> {
         match load {
             Load::Backpacks => Self::from_entries(crate::parse::nbt::load_backpacks(path)?),
-            Load::Json(forced) => Self::open_json(path, forced),
             Load::Nbt(forced) => Self::open_nbt(path, forced),
         }
     }
@@ -259,56 +244,6 @@ impl Store {
         })
     }
 
-    fn open_json(path: &str, forced: Option<JsonKind>) -> Result<Store, String> {
-        let file = File::open(path).map_err(|e| format!("open: {e}"))?;
-        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| format!("mmap: {e}"))?;
-        let (kind, spans) = index_json(&mmap, forced)?;
-
-        const CHUNK: usize = 16384;
-        let mut interner = Interner::default();
-        let mut metas = Vec::with_capacity(spans.len());
-        let mut locs = Vec::with_capacity(spans.len());
-        for (ci, chunk) in spans.chunks(CHUNK).enumerate() {
-            let base = ci * CHUNK;
-            let built: Vec<Vec<(MetaOwned, (u32, u8))>> = chunk
-                .par_iter()
-                .enumerate()
-                .map(|(local, &(s, e))| {
-                    let el: RawElement = match serde_json::from_slice(&mmap[s as usize..e as usize])
-                    {
-                        Ok(v) => v,
-                        Err(_) => return Vec::new(),
-                    };
-                    let spi = (base + local) as u32;
-                    containers::build_one(&el, kind)
-                        .iter()
-                        .enumerate()
-                        .map(|(sub, ent)| (MetaOwned::from_entry(ent), (spi, sub as u8)))
-                        .collect()
-                })
-                .collect();
-            for group in built {
-                for (m, loc) in group {
-                    metas.push(m.intern(&mut interner));
-                    locs.push(loc);
-                }
-            }
-        }
-
-        Ok(Store {
-            metas,
-            interner,
-            backend: Backend::Json {
-                mmap: Arc::new(mmap),
-                spans,
-                locs,
-                kind,
-            },
-            overrides: HashMap::new(),
-            cache: Mutex::new(HashMap::new()),
-        })
-    }
-
     pub fn len(&self) -> usize {
         self.metas.len()
     }
@@ -330,11 +265,6 @@ impl Store {
 
     pub fn text_source(&self, i: usize) -> TextSource<'_> {
         match &self.backend {
-            Backend::Json { mmap, spans, locs, .. } => {
-                let (spi, _) = locs[i];
-                let (s, e) = spans[spi as usize];
-                TextSource::Slice(&mmap[s as usize..e as usize])
-            }
             Backend::Nbt { bytes, spans, locs, .. } => {
                 let (spi, _) = locs[i];
                 let (s, e) = spans[spi as usize];
@@ -356,12 +286,6 @@ impl Store {
             return Some(hit.clone());
         }
         let mut entry = match &self.backend {
-            Backend::Json { mmap, spans, locs, kind } => {
-                let (spi, sub) = *locs.get(i)?;
-                let (s, e) = spans[spi as usize];
-                let el: RawElement = serde_json::from_slice(&mmap[s as usize..e as usize]).ok()?;
-                containers::build_one(&el, *kind).into_iter().nth(sub as usize)?
-            }
             Backend::Nbt { bytes, spans, locs, kind } => {
                 let (spi, sub) = *locs.get(i)?;
                 dump_nbt::build_one(bytes, spans[spi as usize], *kind)
@@ -456,172 +380,4 @@ pub fn ci_contains(hay: &[u8], needle: &str) -> bool {
         i += 1;
     }
     false
-}
-
-fn index_json(bytes: &[u8], forced: Option<JsonKind>) -> Result<(JsonKind, Vec<(u32, u32)>), String> {
-    let start = skip_ws(bytes, 0);
-    if start >= bytes.len() {
-        return Err("empty json".into());
-    }
-    let spans = match bytes[start] {
-        b'[' => split_array(bytes, start),
-        b'{' => match find_member_array(bytes, start) {
-            Some(arr_open) => split_array(bytes, arr_open),
-            None => vec![(start as u32, trim_end(bytes, bytes.len()) as u32)],
-        },
-        _ => return Err("unexpected json shape".into()),
-    };
-    let kind = match forced {
-        Some(k) => k,
-        None => detect_kind(bytes, &spans),
-    };
-    Ok((kind, spans))
-}
-
-fn detect_kind(bytes: &[u8], spans: &[(u32, u32)]) -> JsonKind {
-    if let Some(&(s, e)) = spans.first() {
-        if let Ok(el) = serde_json::from_slice::<RawElement>(&bytes[s as usize..e as usize]) {
-            return containers::detect_kind(&el);
-        }
-    }
-    JsonKind::Containers
-}
-
-fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
-}
-
-fn trim_end(bytes: &[u8], mut end: usize) -> usize {
-    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
-    end
-}
-
-fn skip_string(bytes: &[u8], mut i: usize) -> usize {
-    i += 1;
-    let mut esc = false;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if esc {
-            esc = false;
-        } else if c == b'\\' {
-            esc = true;
-        } else if c == b'"' {
-            return i + 1;
-        }
-        i += 1;
-    }
-    i
-}
-
-fn skip_value(bytes: &[u8], i: usize) -> usize {
-    match bytes.get(i) {
-        Some(b'"') => skip_string(bytes, i),
-        Some(b'{') | Some(b'[') => {
-            let mut depth = 0;
-            let mut j = i;
-            while j < bytes.len() {
-                match bytes[j] {
-                    b'"' => {
-                        j = skip_string(bytes, j);
-                        continue;
-                    }
-                    b'{' | b'[' => depth += 1,
-                    b'}' | b']' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return j + 1;
-                        }
-                    }
-                    _ => {}
-                }
-                j += 1;
-            }
-            j
-        }
-        _ => {
-            let mut j = i;
-            while j < bytes.len() && !matches!(bytes[j], b',' | b'}' | b']') {
-                j += 1;
-            }
-            j
-        }
-    }
-}
-
-fn find_member_array(bytes: &[u8], obj_open: usize) -> Option<usize> {
-    let mut i = skip_ws(bytes, obj_open + 1);
-    while i < bytes.len() && bytes[i] != b'}' {
-        if bytes[i] != b'"' {
-            return None;
-        }
-        let key_start = i + 1;
-        let key_end = skip_string(bytes, i) - 1;
-        let key = &bytes[key_start..key_end];
-        i = skip_ws(bytes, key_end + 1);
-        if i >= bytes.len() || bytes[i] != b':' {
-            return None;
-        }
-        i = skip_ws(bytes, i + 1);
-        if (key == b"containers" || key == b"players") && bytes.get(i) == Some(&b'[') {
-            return Some(i);
-        }
-        i = skip_value(bytes, i);
-        i = skip_ws(bytes, i);
-        if bytes.get(i) == Some(&b',') {
-            i = skip_ws(bytes, i + 1);
-        }
-    }
-    None
-}
-
-fn split_array(bytes: &[u8], open_idx: usize) -> Vec<(u32, u32)> {
-    let mut spans = Vec::new();
-    let mut i = open_idx + 1;
-    let mut depth = 0i32;
-    let mut elem_start: Option<usize> = None;
-    while i < bytes.len() {
-        let c = bytes[i];
-        match c {
-            b'"' => {
-                if elem_start.is_none() {
-                    elem_start = Some(i);
-                }
-                i = skip_string(bytes, i);
-                continue;
-            }
-            b'{' | b'[' => {
-                if elem_start.is_none() {
-                    elem_start = Some(i);
-                }
-                depth += 1;
-            }
-            b'}' | b']' => {
-                if depth == 0 {
-                    if let Some(s) = elem_start.take() {
-                        spans.push((s as u32, trim_end(bytes, i) as u32));
-                    }
-                    break;
-                }
-                depth -= 1;
-            }
-            b',' if depth == 0 => {
-                if let Some(s) = elem_start.take() {
-                    spans.push((s as u32, trim_end(bytes, i) as u32));
-                }
-            }
-            c if !c.is_ascii_whitespace() => {
-                if elem_start.is_none() {
-                    elem_start = Some(i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    spans
 }
