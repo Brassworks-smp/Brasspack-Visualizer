@@ -252,6 +252,7 @@ fn parse_backpack(bc: &Value, owners: &HashMap<String, Owner>) -> Option<Entry> 
         upgrades,
         owner: player.to_lowercase(),
         uuid: uuid.to_lowercase(),
+        access: owner.access,
         ..Default::default()
     };
     let extra = format!("{} {} {}", player, uuid, owner.name);

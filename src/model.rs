@@ -204,6 +204,7 @@ pub struct Entry {
     pub owner: String,
     pub uuid: String,
     pub coords: Option<(i64, i64, i64)>,
+    pub access: i64,
     pub search_blob: String,
     pub nbt_blob: String,
     pub max_stack: i64,

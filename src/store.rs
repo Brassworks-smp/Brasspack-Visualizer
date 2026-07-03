@@ -53,6 +53,8 @@ pub struct EntryMeta {
     pub rows: u16,
     pub meta_len: u8,
     pub max_stack: i32,
+    pub item_total: u32,
+    pub access: i64,
     pub enchants: Box<[(u32, i16)]>,
 }
 
@@ -82,6 +84,8 @@ struct MetaOwned {
     rows: u16,
     meta_len: u8,
     max_stack: i32,
+    item_total: u32,
+    access: i64,
     enchants: Vec<(String, i16)>,
 }
 
@@ -108,6 +112,13 @@ impl MetaOwned {
             rows: e.rows.min(u16::MAX as usize) as u16,
             meta_len: e.meta.len().min(u8::MAX as usize) as u8,
             max_stack: e.max_stack.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            item_total: e
+                .items
+                .iter()
+                .map(|i| i.count.max(0))
+                .sum::<i64>()
+                .min(u32::MAX as i64) as u32,
+            access: e.access,
             enchants: e
                 .all_enchants
                 .iter()
@@ -127,6 +138,8 @@ impl MetaOwned {
             rows: self.rows,
             meta_len: self.meta_len,
             max_stack: self.max_stack,
+            item_total: self.item_total,
+            access: self.access,
             enchants: self
                 .enchants
                 .iter()
@@ -250,6 +263,13 @@ impl Store {
 
     pub fn metas(&self) -> &[EntryMeta] {
         &self.metas
+    }
+
+    pub fn meta_icon(&self, i: usize) -> &str {
+        self.metas
+            .get(i)
+            .map(|m| self.interner.get(m.icon))
+            .unwrap_or("")
     }
 
     pub fn first_kind(&self) -> Option<EntryKind> {

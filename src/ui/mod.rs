@@ -58,6 +58,27 @@ impl Mode {
     }
 }
 
+#[derive(PartialEq, Clone, Copy)]
+enum SortKey {
+    Default,
+    Items,
+    Recent,
+    Type,
+    Coords,
+}
+
+impl SortKey {
+    fn label(self) -> &'static str {
+        match self {
+            SortKey::Default => "File order",
+            SortKey::Items => "Most items",
+            SortKey::Recent => "Recent access",
+            SortKey::Type => "Container type",
+            SortKey::Coords => "Coordinates",
+        }
+    }
+}
+
 struct Source {
     id: u64,
     path: String,
@@ -104,6 +125,7 @@ pub struct App {
     sources: Vec<Source>,
     filtered: Vec<(usize, usize)>,
     filters: Filters,
+    sort: SortKey,
     mode: Mode,
     slot: f32,
     loading_atlas: bool,
@@ -159,6 +181,7 @@ impl App {
             sources: Vec::new(),
             filtered: Vec::new(),
             filters: Filters::default(),
+            sort: SortKey::Default,
             mode: Mode::from_label(&settings.mode),
             slot: settings.zoom.clamp(24.0, 64.0),
             loading_atlas: false,
@@ -260,7 +283,36 @@ impl App {
             }
         }
         self.filtered = out;
+        self.sort_filtered();
         self.status = format!("{} of {} shown", self.filtered.len(), total);
+    }
+
+    fn sort_filtered(&mut self) {
+        if self.sort == SortKey::Default {
+            return;
+        }
+        let key = self.sort;
+        let src = &self.sources;
+        let meta = |si: usize, ei: usize| src[si].store.as_ref().map(|s| &s.metas()[ei]);
+        self.filtered.sort_by(|&(sa, ea), &(sb, eb)| {
+            let (Some(ma), Some(mb)) = (meta(sa, ea), meta(sb, eb)) else {
+                return std::cmp::Ordering::Equal;
+            };
+            match key {
+                SortKey::Items => mb.item_total.cmp(&ma.item_total),
+                SortKey::Recent => mb.access.cmp(&ma.access),
+                SortKey::Type => {
+                    let ta = src[sa].store.as_ref().map(|s| s.meta_icon(ea)).unwrap_or("");
+                    let tb = src[sb].store.as_ref().map(|s| s.meta_icon(eb)).unwrap_or("");
+                    ta.cmp(tb)
+                }
+                SortKey::Coords => ma
+                    .coords
+                    .unwrap_or([i32::MAX; 3])
+                    .cmp(&mb.coords.unwrap_or([i32::MAX; 3])),
+                SortKey::Default => std::cmp::Ordering::Equal,
+            }
+        });
     }
 
     fn advanced_ui(&mut self, ui: &mut egui::Ui) -> bool {
@@ -619,6 +671,22 @@ impl eframe::App for App {
                 {
                     self.advanced_open = !self.advanced_open;
                 }
+
+                ui.separator();
+                ui.label("Sort");
+                egui::ComboBox::from_id_salt("sort")
+                    .selected_text(self.sort.label())
+                    .show_ui(ui, |ui| {
+                        for s in [
+                            SortKey::Default,
+                            SortKey::Items,
+                            SortKey::Recent,
+                            SortKey::Type,
+                            SortKey::Coords,
+                        ] {
+                            changed |= ui.selectable_value(&mut self.sort, s, s.label()).changed();
+                        }
+                    });
 
                 ui.separator();
                 ui.label(egui::RichText::new("Enchant").color(GOLD));
