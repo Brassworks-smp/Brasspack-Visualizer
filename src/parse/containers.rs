@@ -363,7 +363,76 @@ pub(crate) fn item_from_json(v: &J, default_slot: i32) -> Option<Item> {
             apply_legacy_tag(&mut item, obj);
         });
     }
+
+    let mut stock = None;
+    let mut air = None;
+    let is_toolbox = item.id.contains("toolbox");
+    for root in [v.get("components"), v.get("tag"), v.get("nbt")].into_iter().flatten() {
+        with_object(root, |obj| {
+            stock = stock.or_else(|| json_find_num(obj, "tag_stock"));
+            air = air.or_else(|| json_find_num(obj, "Air"));
+            if is_toolbox && item.contents.is_empty() {
+                extract_toolbox_json(obj, &mut item.contents);
+            }
+        });
+    }
+    item.apply_gauges(stock, air);
     Some(item)
+}
+
+fn json_find_num(v: &J, key: &str) -> Option<i64> {
+    match v {
+        J::Object(m) => {
+            for (k, val) in m {
+                if k.eq_ignore_ascii_case(key) {
+                    if let Some(n) = val.as_i64().or_else(|| val.as_f64().map(|f| f as i64)) {
+                        return Some(n);
+                    }
+                }
+            }
+            m.values().find_map(|val| json_find_num(val, key))
+        }
+        J::Array(a) => a.iter().find_map(|e| json_find_num(e, key)),
+        _ => None,
+    }
+}
+
+fn find_json_array<'a>(v: &'a J, key: &str) -> Option<&'a Vec<J>> {
+    match v {
+        J::Object(m) => {
+            if let Some(J::Array(a)) = m.get(key) {
+                return Some(a);
+            }
+            m.values().find_map(|val| find_json_array(val, key))
+        }
+        J::Array(a) => a.iter().find_map(|e| find_json_array(e, key)),
+        _ => None,
+    }
+}
+
+fn extract_toolbox_json(v: &J, out: &mut Vec<Item>) {
+    let Some(compartments) = find_json_array(v, "Compartments") else { return };
+    for c in compartments {
+        match c {
+            J::Array(items) => {
+                for it in items {
+                    if let Some(item) = item_from_json(it, out.len() as i32) {
+                        out.push(item);
+                    }
+                }
+            }
+            J::Object(_) => {
+                if let Some(J::Array(items)) = c.get("Items") {
+                    for it in items {
+                        if let Some(item) = item_from_json(it, out.len() as i32) {
+                            out.push(item);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn apply_components(item: &mut Item, comps: &J) {
@@ -387,6 +456,9 @@ fn apply_components(item: &mut Item, comps: &J) {
     read_json_enchants(comps.get("minecraft:stored_enchantments"), &mut item.enchants);
     if let Some(d) = num(comps.get("minecraft:damage")) {
         item.damage = Some(d as i32);
+    }
+    if let Some(m) = num(comps.get("minecraft:max_damage")) {
+        item.max_damage = Some(m as i32);
     }
     for key in crate::model::NESTED_KEYS {
         if let Some(cv) = comps.get(*key) {

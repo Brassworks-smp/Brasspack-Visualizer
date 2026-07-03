@@ -28,6 +28,32 @@ pub(crate) fn as_i64(v: &Value) -> Option<i64> {
     }
 }
 
+fn as_num(v: &Value) -> Option<i64> {
+    as_i64(v).or_else(|| match v {
+        Value::Float(f) => Some(*f as i64),
+        Value::Double(d) => Some(*d as i64),
+        _ => None,
+    })
+}
+
+// Recursively find the first numeric value stored under `key` (case-insensitive).
+pub(crate) fn find_num(v: &Value, key: &str) -> Option<i64> {
+    match v {
+        Value::Compound(m) => {
+            for (k, val) in m {
+                if k.eq_ignore_ascii_case(key) {
+                    if let Some(n) = as_num(val) {
+                        return Some(n);
+                    }
+                }
+            }
+            m.values().find_map(|val| find_num(val, key))
+        }
+        Value::List(l) => l.iter().find_map(|e| find_num(e, key)),
+        _ => None,
+    }
+}
+
 pub(crate) fn as_str(v: &Value) -> Option<&str> {
     match v {
         Value::String(s) => Some(s.as_str()),
@@ -345,6 +371,48 @@ fn apply_components(item: &mut Item, components: &Value) {
     if item.is_player_head() {
         if let Some(prof) = map.get("minecraft:profile") {
             extract_skull(prof, item);
+        }
+    }
+
+    if item.id.contains("toolbox") && item.contents.is_empty() {
+        if let Some(cd) = map.get("minecraft:custom_data") {
+            extract_toolbox(cd, &mut item.contents);
+        }
+    }
+
+    let stock = find_num(components, "tag_stock");
+    let air = find_num(components, "Air");
+    item.apply_gauges(stock, air);
+}
+
+// Create toolboxes store their 8 compartments in custom_data. Gather any
+// item lists we can find so the toolbox becomes an openable nested container.
+pub(crate) fn extract_toolbox(cd: &Value, out: &mut Vec<Item>) {
+    let Some(map) = comp(cd) else { return };
+    let compartments = map
+        .get("Compartments")
+        .or_else(|| map.get("Inventory").and_then(|inv| get(inv, "Compartments")));
+    if let Some(Value::List(list)) = compartments {
+        for comp_v in list {
+            match comp_v {
+                Value::List(items) => {
+                    for it in items {
+                        if let Some(item) = item_from_nbt(it, out.len() as i32) {
+                            out.push(item);
+                        }
+                    }
+                }
+                Value::Compound(_) => {
+                    if let Some(Value::List(items)) = get(comp_v, "Items") {
+                        for it in items {
+                            if let Some(item) = item_from_nbt(it, out.len() as i32) {
+                                out.push(item);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
 }

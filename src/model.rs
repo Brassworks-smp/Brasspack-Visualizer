@@ -1,4 +1,10 @@
 
+#[derive(Clone, Copy, Debug)]
+pub struct Bar {
+    pub frac: f32,
+    pub color: [u8; 3],
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Item {
     pub id: String,
@@ -14,7 +20,22 @@ pub struct Item {
     pub storage_uuid: Option<String>,
     pub head_skin: Option<String>,
     pub head_ref: Option<String>,
+    pub bar: Option<Bar>,
+    pub outline: Option<[u8; 3]>,
+    pub gauge_text: Option<String>,
 }
+
+// Create Stuff & Additions tank capacities (mB) by tank size.
+pub const SMALL_CAP: i64 = 800;
+pub const MEDIUM_CAP: i64 = 1600;
+pub const LARGE_CAP: i64 = 3200;
+
+// Create backtank air capacity (default, without capacity enchant).
+pub const BACKTANK_MAX_AIR: i64 = 1800;
+
+const FILLING_COLOR: [u8; 3] = [0x79, 0x97, 0xd9];
+const FUELING_COLOR: [u8; 3] = [0xff, 0xa5, 0x65];
+const BACKTANK_COLOR: [u8; 3] = [0xff, 0xff, 0xff];
 
 pub const NESTED_KEYS: &[&str] = &[
     "minecraft:container",
@@ -45,6 +66,59 @@ impl Item {
             return None;
         }
         self.head_skin.as_deref().or(self.head_ref.as_deref())
+    }
+
+    fn tank_capacity(&self) -> i64 {
+        let id = self.id.as_str();
+        if id.contains("small") {
+            SMALL_CAP
+        } else if id.contains("large") {
+            LARGE_CAP
+        } else {
+            MEDIUM_CAP
+        }
+    }
+
+    // Populate `bar`/`outline` from parsed damage + Create custom-data values.
+    // `stock` is the Create Stuff & Additions `tag_stock` fluid amount (mB);
+    // `air` is a Create backtank `Air` pressure value.
+    pub fn apply_gauges(&mut self, stock: Option<i64>, air: Option<i64>) {
+        let id = self.id.to_lowercase();
+
+        if id.contains("backtank") {
+            self.outline = Some(BACKTANK_COLOR);
+            if let Some(a) = air {
+                let frac = (a as f32 / BACKTANK_MAX_AIR as f32).clamp(0.0, 1.0);
+                self.bar = Some(Bar { frac, color: BACKTANK_COLOR });
+                self.gauge_text = Some(format!("Air: {a} / {BACKTANK_MAX_AIR}"));
+            }
+            return;
+        }
+
+        if id.contains("tank") {
+            let (color, kind) = if id.contains("fueling") {
+                (Some(FUELING_COLOR), "Fuel")
+            } else if id.contains("filling") {
+                (Some(FILLING_COLOR), "Fluid")
+            } else {
+                (None, "Fluid")
+            };
+            if let (Some(color), Some(s)) = (color, stock) {
+                let cap = self.tank_capacity();
+                let frac = (s as f32 / cap as f32).clamp(0.0, 1.0);
+                self.bar = Some(Bar { frac, color });
+                self.gauge_text = Some(format!("{kind}: {s} / {cap} mB"));
+                return;
+            }
+        }
+
+        // Vanilla durability bar.
+        if let (Some(dmg), Some(max)) = (self.damage, self.max_damage) {
+            if max > 0 && dmg > 0 {
+                let frac = ((max - dmg) as f32 / max as f32).clamp(0.0, 1.0);
+                self.bar = Some(Bar { frac, color: durability_rgb(frac) });
+            }
+        }
     }
 
     pub fn max_count(&self) -> i64 {
@@ -162,6 +236,19 @@ impl Entry {
         self.all_enchants = ench;
         self.max_stack = max_stack;
     }
+}
+
+// Vanilla item durability bar color: green (full) through red (empty).
+pub fn durability_rgb(frac: f32) -> [u8; 3] {
+    let h = (frac.clamp(0.0, 1.0) / 3.0) * 6.0;
+    let i = h.floor() as i32 % 6;
+    let f = h - h.floor();
+    let (r, g, b) = match i {
+        0 => (1.0, f, 0.0),
+        1 => (1.0 - f, 1.0, 0.0),
+        _ => (0.0, 1.0, 0.0),
+    };
+    [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
 }
 
 pub fn prettify_id(id: &str) -> String {
