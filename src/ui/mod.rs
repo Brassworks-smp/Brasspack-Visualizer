@@ -1278,7 +1278,9 @@ impl eframe::App for App {
 
             let avail_w = ui.available_width();
             let spacing = 12.0;
-            let slot = fit_slot(avail_w, self.target_cols, spacing);
+            let max_cols = (((avail_w + spacing) / (card_width(24.0) + spacing)).floor() as usize)
+                .max(1);
+            let slot = fit_slot(avail_w, self.target_cols.min(max_cols), spacing);
             self.slot = slot;
             let Some(atlas) = self.atlas.as_mut() else {
                 return;
