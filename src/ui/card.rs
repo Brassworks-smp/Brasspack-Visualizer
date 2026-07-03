@@ -33,12 +33,12 @@ fn match_level(item: &Item, hl: Option<&Highlight>, bp: &BpIndex) -> u8 {
     }
 }
 
-// Subtle marker for a slot that matched the search: a small gold corner tab.
+// Gold marker for a slot that matched the search: a corner tab plus an outline.
 // `strong` marks the item itself; otherwise it marks a container whose nested
-// contents matched (drawn dimmer).
+// contents matched (drawn a touch dimmer).
 fn paint_match(ui: &egui::Ui, rect: Rect, strong: bool) {
     let painter = ui.painter();
-    let col = if strong { MATCH } else { MATCH.gamma_multiply(0.5) };
+    let col = if strong { MATCH } else { MATCH.gamma_multiply(0.65) };
     // top-right corner tab (the nested badge lives top-left, count bottom-right)
     let s = (rect.width() * 0.3).clamp(6.0, 11.0);
     let tr = Pos2::new(rect.max.x - 1.5, rect.min.y + 1.5);
@@ -47,9 +47,7 @@ fn paint_match(ui: &egui::Ui, rect: Rect, strong: bool) {
         col,
         Stroke::NONE,
     ));
-    if strong {
-        painter.rect_stroke(rect.shrink(1.0), Rounding::same(3.0), Stroke::new(1.0, col));
-    }
+    painter.rect_stroke(rect.shrink(1.0), Rounding::same(3.0), Stroke::new(1.5, col));
 }
 
 fn resolve_nested<'a>(item: &'a Item, bp: &'a BpIndex) -> &'a [Item] {
@@ -328,8 +326,8 @@ fn paint_hover_ring(ui: &egui::Ui, rect: Rect) {
 // Minecraft-style durability / tank fill bar along the bottom of a slot.
 fn paint_bar(ui: &egui::Ui, rect: Rect, bar: &Bar) {
     let m = rect.width() * 0.12;
-    let h = (rect.height() * 0.09).max(2.0);
-    let y = rect.bottom() - rect.height() * 0.18;
+    let h = (rect.height() * 0.055).clamp(2.0, 3.0);
+    let y = rect.bottom() - rect.height() * 0.16;
     let left = rect.left() + m;
     let full = rect.width() - 2.0 * m;
     let painter = ui.painter();

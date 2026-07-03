@@ -202,7 +202,7 @@ fn draw_missing(canvas: &mut RgbaImage, x: u32, y: u32, size: u32) {
 
 fn draw_bar(canvas: &mut RgbaImage, x: u32, y: u32, size: u32, bar: &crate::model::Bar) {
     let margin = (size as f32 * 0.12) as u32;
-    let h = ((size as f32 * 0.1) as u32).max(2);
+    let h = ((size as f32 * 0.06) as u32).clamp(2, 3);
     let full = size.saturating_sub(2 * margin);
     let by = y + size - h - (size as f32 * 0.08) as u32;
     let bx = x + margin;
