@@ -21,9 +21,8 @@ fn main() -> eframe::Result<()> {
     }
     if let Some(pos) = args.iter().position(|a| a == "--store-mem") {
         if let Some(path) = args.get(pos + 1) {
-            let is_backpack = !path.to_lowercase().ends_with(".json");
             let t = std::time::Instant::now();
-            let s = store::Store::open(path, is_backpack, None).expect("store");
+            let s = store::Store::open(path, store::Load::auto(path)).expect("store");
             println!("store opened: {} entries in {:?}", s.len(), t.elapsed());
             return Ok(());
         }
@@ -140,7 +139,7 @@ fn verify_store(path: &str) {
         parse::containers::load_json(path, None)
     }
     .expect("eager parse");
-    let store = store::Store::open(path, is_backpack, None).expect("store open");
+    let store = store::Store::open(path, store::Load::auto(path)).expect("store open");
 
     println!("counts: eager={} store={}", eager.len(), store.len());
     if eager.len() != store.len() {

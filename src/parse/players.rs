@@ -44,7 +44,7 @@ pub(crate) fn build_player(el: &RawElement) -> Vec<Entry> {
     out
 }
 
-fn remap_inventory_slot(slot: i32) -> i32 {
+pub(crate) fn remap_inventory_slot(slot: i32) -> i32 {
     match slot {
         103 => 0,
         102 => 1,

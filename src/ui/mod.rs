@@ -113,14 +113,28 @@ fn filename(path: &str) -> String {
 
 fn open_store(path: &str, mode: Mode) -> Result<Store, String> {
     use crate::parse::containers::JsonKind;
+    use crate::parse::dump_nbt::DumpKind;
+    use crate::store::Load;
     let is_json = path.to_lowercase().ends_with(".json");
-    let (is_backpack, forced): (bool, Option<JsonKind>) = match mode {
-        Mode::Auto => (!is_json, None),
-        Mode::Backpacks => (true, None),
-        Mode::Containers => (false, Some(JsonKind::Containers)),
-        Mode::Players => (false, Some(JsonKind::Players)),
+    let load = match mode {
+        Mode::Auto => Load::auto(path),
+        Mode::Backpacks => Load::Backpacks,
+        Mode::Containers => {
+            if is_json {
+                Load::Json(Some(JsonKind::Containers))
+            } else {
+                Load::Nbt(Some(DumpKind::Containers))
+            }
+        }
+        Mode::Players => {
+            if is_json {
+                Load::Json(Some(JsonKind::Players))
+            } else {
+                Load::Nbt(Some(DumpKind::Players))
+            }
+        }
     };
-    Store::open(path, is_backpack, forced)
+    Store::open(path, load)
 }
 
 impl App {

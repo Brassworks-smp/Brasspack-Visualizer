@@ -7,6 +7,23 @@ use rayon::prelude::*;
 
 use crate::model::{Entry, EntryKind, Item};
 use crate::parse::containers::{self, JsonKind, RawElement};
+use crate::parse::dump_nbt::{self, DumpKind};
+
+pub enum Load {
+    Backpacks,
+    Json(Option<JsonKind>),
+    Nbt(Option<DumpKind>),
+}
+
+impl Load {
+    pub fn auto(path: &str) -> Load {
+        if path.to_lowercase().ends_with(".json") {
+            Load::Json(None)
+        } else {
+            Load::Nbt(None)
+        }
+    }
+}
 
 const F_DUNGEON: u8 = 1;
 const F_HAS_ITEMS: u8 = 2;
@@ -143,6 +160,12 @@ enum Backend {
         locs: Vec<(u32, u8)>,
         kind: JsonKind,
     },
+    Nbt {
+        bytes: Arc<Vec<u8>>,
+        spans: Vec<(u32, u32)>,
+        locs: Vec<(u32, u8)>,
+        kind: DumpKind,
+    },
     Mem {
         entries: Vec<Entry>,
     },
@@ -159,23 +182,84 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn open(path: &str, is_backpack: bool, forced: Option<JsonKind>) -> Result<Store, String> {
-        if is_backpack {
-            let entries = crate::parse::nbt::load_backpacks(path)?;
-            let mut interner = Interner::default();
-            let metas = entries
-                .iter()
-                .map(|e| MetaOwned::from_entry(e).intern(&mut interner))
+    pub fn open(path: &str, load: Load) -> Result<Store, String> {
+        match load {
+            Load::Backpacks => Self::from_entries(crate::parse::nbt::load_backpacks(path)?),
+            Load::Json(forced) => Self::open_json(path, forced),
+            Load::Nbt(forced) => Self::open_nbt(path, forced),
+        }
+    }
+
+    fn from_entries(entries: Vec<Entry>) -> Result<Store, String> {
+        let mut interner = Interner::default();
+        let metas = entries
+            .iter()
+            .map(|e| MetaOwned::from_entry(e).intern(&mut interner))
+            .collect();
+        Ok(Store {
+            metas,
+            interner,
+            backend: Backend::Mem { entries },
+            overrides: HashMap::new(),
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn open_nbt(path: &str, forced: Option<DumpKind>) -> Result<Store, String> {
+        let raw = std::fs::read(path).map_err(|e| format!("read: {e}"))?;
+        let bytes = crate::parse::nbt::decompress(&raw);
+        let (detected, spans) = match dump_nbt::split_dump(&bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                if forced.is_none() {
+                    return Self::from_entries(crate::parse::nbt::load_backpacks_bytes(&bytes)?);
+                }
+                return Err(e);
+            }
+        };
+        let kind = forced.unwrap_or(detected);
+
+        const CHUNK: usize = 16384;
+        let mut interner = Interner::default();
+        let mut metas = Vec::with_capacity(spans.len());
+        let mut locs = Vec::with_capacity(spans.len());
+        for (ci, chunk) in spans.chunks(CHUNK).enumerate() {
+            let base = ci * CHUNK;
+            let built: Vec<Vec<(MetaOwned, (u32, u8))>> = chunk
+                .par_iter()
+                .enumerate()
+                .map(|(local, &span)| {
+                    let spi = (base + local) as u32;
+                    dump_nbt::build_one(&bytes, span, kind)
+                        .iter()
+                        .enumerate()
+                        .map(|(sub, ent)| (MetaOwned::from_entry(ent), (spi, sub as u8)))
+                        .collect()
+                })
                 .collect();
-            return Ok(Store {
-                metas,
-                interner,
-                backend: Backend::Mem { entries },
-                overrides: HashMap::new(),
-                cache: Mutex::new(HashMap::new()),
-            });
+            for group in built {
+                for (m, loc) in group {
+                    metas.push(m.intern(&mut interner));
+                    locs.push(loc);
+                }
+            }
         }
 
+        Ok(Store {
+            metas,
+            interner,
+            backend: Backend::Nbt {
+                bytes: Arc::new(bytes),
+                spans,
+                locs,
+                kind,
+            },
+            overrides: HashMap::new(),
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn open_json(path: &str, forced: Option<JsonKind>) -> Result<Store, String> {
         let file = File::open(path).map_err(|e| format!("open: {e}"))?;
         let mmap = unsafe { Mmap::map(&file) }.map_err(|e| format!("mmap: {e}"))?;
         let (kind, spans) = index_json(&mmap, forced)?;
@@ -240,7 +324,7 @@ impl Store {
     pub fn mem_entries(&self) -> &[Entry] {
         match &self.backend {
             Backend::Mem { entries } => entries,
-            Backend::Json { .. } => &[],
+            _ => &[],
         }
     }
 
@@ -250,6 +334,11 @@ impl Store {
                 let (spi, _) = locs[i];
                 let (s, e) = spans[spi as usize];
                 TextSource::Slice(&mmap[s as usize..e as usize])
+            }
+            Backend::Nbt { bytes, spans, locs, .. } => {
+                let (spi, _) = locs[i];
+                let (s, e) = spans[spi as usize];
+                TextSource::Slice(&bytes[s as usize..e as usize])
             }
             Backend::Mem { entries } => {
                 let e = &entries[i];
@@ -272,6 +361,12 @@ impl Store {
                 let (s, e) = spans[spi as usize];
                 let el: RawElement = serde_json::from_slice(&mmap[s as usize..e as usize]).ok()?;
                 containers::build_one(&el, *kind).into_iter().nth(sub as usize)?
+            }
+            Backend::Nbt { bytes, spans, locs, kind } => {
+                let (spi, sub) = *locs.get(i)?;
+                dump_nbt::build_one(bytes, spans[spi as usize], *kind)
+                    .into_iter()
+                    .nth(sub as usize)?
             }
             Backend::Mem { entries } => entries.get(i)?.clone(),
         };

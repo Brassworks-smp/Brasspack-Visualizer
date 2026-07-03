@@ -7,18 +7,18 @@ use rayon::prelude::*;
 
 use crate::model::{format_short_date, CopyAction, Entry, EntryKind, Item};
 
-fn comp(v: &Value) -> Option<&HashMap<String, Value>> {
+pub(crate) fn comp(v: &Value) -> Option<&HashMap<String, Value>> {
     match v {
         Value::Compound(m) => Some(m),
         _ => None,
     }
 }
 
-fn get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+pub(crate) fn get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     comp(v)?.get(key)
 }
 
-fn as_i64(v: &Value) -> Option<i64> {
+pub(crate) fn as_i64(v: &Value) -> Option<i64> {
     match v {
         Value::Byte(x) => Some(*x as i64),
         Value::Short(x) => Some(*x as i64),
@@ -28,14 +28,14 @@ fn as_i64(v: &Value) -> Option<i64> {
     }
 }
 
-fn as_str(v: &Value) -> Option<&str> {
+pub(crate) fn as_str(v: &Value) -> Option<&str> {
     match v {
         Value::String(s) => Some(s.as_str()),
         _ => None,
     }
 }
 
-fn as_list(v: &Value) -> Option<&Vec<Value>> {
+pub(crate) fn as_list(v: &Value) -> Option<&Vec<Value>> {
     match v {
         Value::List(l) => Some(l),
         _ => None,
@@ -59,7 +59,11 @@ fn int_array(v: &Value) -> Option<Vec<i32>> {
 pub fn load_backpacks(path: &str) -> Result<Vec<Entry>, String> {
     let raw = std::fs::read(path).map_err(|e| format!("read: {e}"))?;
     let bytes = decompress(&raw);
-    let root: Value = fastnbt::from_bytes(&bytes).map_err(|e| format!("nbt parse: {e}"))?;
+    load_backpacks_bytes(&bytes)
+}
+
+pub(crate) fn load_backpacks_bytes(bytes: &[u8]) -> Result<Vec<Entry>, String> {
+    let root: Value = fastnbt::from_bytes(bytes).map_err(|e| format!("nbt parse: {e}"))?;
 
     let payload = find_payload(&root, 0).ok_or("could not locate 'backpackContents' in NBT")?;
 
@@ -76,7 +80,7 @@ pub fn load_backpacks(path: &str) -> Result<Vec<Entry>, String> {
     Ok(entries)
 }
 
-fn decompress(raw: &[u8]) -> Vec<u8> {
+pub(crate) fn decompress(raw: &[u8]) -> Vec<u8> {
     if raw.first() == Some(&0x1f) {
         let mut d = flate2::read::MultiGzDecoder::new(raw);
         let mut out = Vec::new();
@@ -257,7 +261,7 @@ fn items_from_inv(inv: &Value) -> Vec<Item> {
     out
 }
 
-fn item_from_nbt(v: &Value, default_slot: i32) -> Option<Item> {
+pub(crate) fn item_from_nbt(v: &Value, default_slot: i32) -> Option<Item> {
     let id = get(v, "id").and_then(as_str)?.to_lowercase();
     if id.is_empty() || id.contains("air") {
         return None;
