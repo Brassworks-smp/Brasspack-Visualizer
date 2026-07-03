@@ -167,6 +167,79 @@ fn accumulate_item(it: &Item, map: &mut std::collections::HashMap<String, i64>) 
     }
 }
 
+#[derive(serde::Serialize)]
+struct ExportRow {
+    kind: &'static str,
+    dimension: String,
+    x: Option<i64>,
+    y: Option<i64>,
+    z: Option<i64>,
+    container: String,
+    owner: String,
+    item: String,
+    count: i64,
+    name: String,
+}
+
+fn kind_label(k: EntryKind) -> &'static str {
+    match k {
+        EntryKind::Backpack => "backpack",
+        EntryKind::Container => "container",
+        EntryKind::Player => "player",
+    }
+}
+
+fn collect_export_rows(it: &Item, entry: &Entry, out: &mut Vec<ExportRow>) {
+    let (x, y, z) = match entry.coords {
+        Some((x, y, z)) => (Some(x), Some(y), Some(z)),
+        None => (None, None, None),
+    };
+    out.push(ExportRow {
+        kind: kind_label(entry.kind),
+        dimension: entry.dimension.clone(),
+        x,
+        y,
+        z,
+        container: entry.header_icon.clone(),
+        owner: entry.owner.clone(),
+        item: it.id.clone(),
+        count: it.count,
+        name: it.custom_name.clone().unwrap_or_default(),
+    });
+    for c in &it.contents {
+        collect_export_rows(c, entry, out);
+    }
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn rows_to_csv(rows: &[ExportRow]) -> String {
+    let mut out = String::from("kind,dimension,x,y,z,container,owner,item,count,name\n");
+    let opt = |v: Option<i64>| v.map(|n| n.to_string()).unwrap_or_default();
+    for r in rows {
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{}\n",
+            csv_field(r.kind),
+            csv_field(&r.dimension),
+            opt(r.x),
+            opt(r.y),
+            opt(r.z),
+            csv_field(&r.container),
+            csv_field(&r.owner),
+            csv_field(&r.item),
+            r.count,
+            csv_field(&r.name),
+        ));
+    }
+    out
+}
+
 fn open_store(path: &str, mode: Mode) -> Result<Store, String> {
     use crate::parse::dump_nbt::DumpKind;
     use crate::store::Load;
@@ -306,6 +379,60 @@ impl App {
         self.sort_filtered();
         self.totals = None;
         self.status = format!("{} of {} shown", self.filtered.len(), total);
+    }
+
+    fn export_rows(&self) -> Vec<ExportRow> {
+        let mut rows = Vec::new();
+        for &(si, ei) in &self.filtered {
+            let Some(store) = self.sources.get(si).and_then(|s| s.store.as_ref()) else {
+                continue;
+            };
+            let Some(entry) = store.entry(ei) else { continue };
+            for it in entry.items.iter().chain(entry.upgrades.iter()) {
+                collect_export_rows(it, &entry, &mut rows);
+            }
+        }
+        rows
+    }
+
+    fn filtered_tps(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for &(si, ei) in &self.filtered {
+            let Some(store) = self.sources.get(si).and_then(|s| s.store.as_ref()) else {
+                continue;
+            };
+            let Some(entry) = store.entry(ei) else { continue };
+            if let Some((x, y, z)) = entry.coords {
+                let dim = if entry.dimension.is_empty() {
+                    "minecraft:overworld"
+                } else {
+                    entry.dimension.as_str()
+                };
+                lines.push(format!("/execute in {dim} run tp @s {x} {y} {z}"));
+            }
+        }
+        lines
+    }
+
+    fn do_export(&mut self, json: bool) {
+        let rows = self.export_rows();
+        let (data, ext, name) = if json {
+            let data = serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".into());
+            (data, "json", "infiltrator_export.json")
+        } else {
+            (rows_to_csv(&rows), "csv", "infiltrator_export.csv")
+        };
+        let n = rows.len();
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(name)
+            .add_filter(ext, &[ext])
+            .save_file()
+        {
+            match std::fs::write(&path, data) {
+                Ok(_) => self.toast(format!("Exported {n} rows")),
+                Err(e) => self.toast(format!("Export failed: {e}")),
+            }
+        }
     }
 
     fn compute_totals(&self) -> Totals {
@@ -627,6 +754,9 @@ impl eframe::App for App {
             dirty = true;
         }
 
+        let mut export: Option<bool> = None;
+        let mut copy_tps = false;
+
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
@@ -673,6 +803,21 @@ impl eframe::App for App {
                 {
                     self.totals_open = !self.totals_open;
                 }
+
+                ui.menu_button("Export ▾", |ui| {
+                    if ui.button("Items → CSV").clicked() {
+                        export = Some(false);
+                        ui.close_menu();
+                    }
+                    if ui.button("Items → JSON").clicked() {
+                        export = Some(true);
+                        ui.close_menu();
+                    }
+                    if ui.button("Copy all TP commands").clicked() {
+                        copy_tps = true;
+                        ui.close_menu();
+                    }
+                });
             });
 
             ui.add_space(2.0);
@@ -1170,6 +1315,16 @@ impl eframe::App for App {
             self.pick_atlas();
         }
 
+        if let Some(json) = export {
+            self.do_export(json);
+        }
+        if copy_tps {
+            let tps = self.filtered_tps();
+            let n = tps.len();
+            ctx.copy_text(tps.join("\n"));
+            self.toast(format!("Copied {n} TP command(s)"));
+        }
+
         if do_load {
             if let Some(paths) = rfd::FileDialog::new()
                 .add_filter("Backpacks / Containers / Players", &["dat", "nbt"])
@@ -1513,4 +1668,52 @@ fn welcome_screen(ui: &mut egui::Ui) -> bool {
         }
     });
     clicked
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+    use crate::model::{Entry, EntryKind, Item};
+
+    #[test]
+    fn csv_escaping() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn rows_recurse_contents_with_coords() {
+        let inner = Item {
+            id: "minecraft:diamond".into(),
+            count: 5,
+            ..Default::default()
+        };
+        let shulker = Item {
+            id: "minecraft:shulker_box".into(),
+            count: 1,
+            contents: vec![inner],
+            ..Default::default()
+        };
+        let entry = Entry {
+            kind: EntryKind::Container,
+            header_icon: "minecraft:chest".into(),
+            dimension: "minecraft:overworld".into(),
+            coords: Some((10, 64, -3)),
+            items: vec![shulker],
+            ..Default::default()
+        };
+        let mut rows = Vec::new();
+        for it in &entry.items {
+            collect_export_rows(it, &entry, &mut rows);
+        }
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].item, "minecraft:shulker_box");
+        assert_eq!(rows[1].item, "minecraft:diamond");
+        assert_eq!(rows[1].count, 5);
+        assert_eq!(rows[1].x, Some(10));
+        let csv = rows_to_csv(&rows);
+        assert_eq!(csv.lines().count(), 3);
+        assert!(csv.starts_with("kind,dimension,x,y,z,container,owner,item,count,name"));
+    }
 }
