@@ -13,7 +13,7 @@ use crate::render::atlas::{Atlas, GLINT_FRAMES};
 use crate::render::export::McFont;
 use crate::model::{Entry, EntryKind, Item};
 use crate::profiles::{Fetched, Profiles};
-use crate::search::{parse_query, DungeonFilter, EnchOp, Expr, Filters, TextCat};
+use crate::search::{DungeonFilter, EnchOp, Filters, Highlight, TextCat};
 use crate::settings::{SavedFile, Settings};
 use crate::store::Store;
 
@@ -113,7 +113,7 @@ pub struct App {
     bp_meta: std::collections::HashMap<String, BpInfo>,
     popup: Vec<PopupLevel>,
     search_help: bool,
-    highlight: Option<Expr>,
+    highlight: Option<Highlight>,
     profiles: Profiles,
     next_id: u64,
 }
@@ -233,11 +233,7 @@ impl App {
     }
 
     fn run_search(&mut self) {
-        // Highlight matching items only when the text query targets item text.
-        self.highlight = match self.filters.cat {
-            TextCat::Any | TextCat::Item => parse_query(&self.filters.text),
-            _ => None,
-        };
+        self.highlight = self.filters.highlight();
         let c = self.filters.compile();
         let mut out = Vec::new();
         let mut total = 0usize;

@@ -80,17 +80,19 @@ impl Item {
     }
 
     // Populate `bar`/`outline` from parsed damage + Create custom-data values.
-    // `stock` is the Create Stuff & Additions `tag_stock` fluid amount (mB);
-    // `air` is a Create backtank `Air` pressure value.
-    pub fn apply_gauges(&mut self, stock: Option<i64>, air: Option<i64>) {
+    // `stock` is the Create Stuff & Additions `tagStock` fluid amount (mB);
+    // `air` is a Create backtank air value; `capacity_ench` is the level of the
+    // Create `capacity` enchantment which raises a backtank's max air.
+    pub fn apply_gauges(&mut self, stock: Option<i64>, air: Option<i64>, capacity_ench: Option<i32>) {
         let id = self.id.to_lowercase();
 
         if id.contains("backtank") {
             self.outline = Some(BACKTANK_COLOR);
             if let Some(a) = air {
-                let frac = (a as f32 / BACKTANK_MAX_AIR as f32).clamp(0.0, 1.0);
+                let max = BACKTANK_MAX_AIR + capacity_ench.unwrap_or(0).max(0) as i64 * BACKTANK_MAX_AIR;
+                let frac = (a as f32 / max as f32).clamp(0.0, 1.0);
                 self.bar = Some(Bar { frac, color: BACKTANK_COLOR });
-                self.gauge_text = Some(format!("Air: {a} / {BACKTANK_MAX_AIR}"));
+                self.gauge_text = Some(format!("Air: {a} / {max}"));
             }
             return;
         }

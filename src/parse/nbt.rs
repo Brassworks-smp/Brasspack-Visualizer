@@ -375,45 +375,47 @@ fn apply_components(item: &mut Item, components: &Value) {
     }
 
     if item.id.contains("toolbox") && item.contents.is_empty() {
-        if let Some(cd) = map.get("minecraft:custom_data") {
-            extract_toolbox(cd, &mut item.contents);
+        if let Some(tb) = map.get("create:toolbox_inventory") {
+            extract_toolbox(tb, &mut item.contents);
         }
     }
 
-    let stock = find_num(components, "tag_stock");
-    let air = find_num(components, "Air");
-    item.apply_gauges(stock, air);
+    let stock = find_num(components, "tagStock").or_else(|| find_num(components, "tag_stock"));
+    let air = find_num(components, "create:banktank_air").or_else(|| find_num(components, "Air"));
+    let capacity_ench = item
+        .enchants
+        .iter()
+        .find(|(id, _)| id.contains("create:capacity"))
+        .map(|(_, l)| *l);
+    item.apply_gauges(stock, air, capacity_ench);
 }
 
-// Create toolboxes store their 8 compartments in custom_data. Gather any
-// item lists we can find so the toolbox becomes an openable nested container.
-pub(crate) fn extract_toolbox(cd: &Value, out: &mut Vec<Item>) {
-    let Some(map) = comp(cd) else { return };
-    let compartments = map
-        .get("Compartments")
-        .or_else(|| map.get("Inventory").and_then(|inv| get(inv, "Compartments")));
-    if let Some(Value::List(list)) = compartments {
-        for comp_v in list {
-            match comp_v {
-                Value::List(items) => {
-                    for it in items {
-                        if let Some(item) = item_from_nbt(it, out.len() as i32) {
-                            out.push(item);
-                        }
+// Create toolboxes store contents in `create:toolbox_inventory` as a nested
+// `items -> items -> { "<slot>": item }` compound. Collect them so the toolbox
+// becomes an openable nested container.
+pub(crate) fn extract_toolbox(inv: &Value, out: &mut Vec<Item>) {
+    let inner = get(inv, "items")
+        .and_then(|i| get(i, "items"))
+        .or_else(|| get(inv, "items"));
+    match inner {
+        Some(Value::Compound(m)) => {
+            for (slot, it) in m {
+                if get(it, "id").is_some() {
+                    let s = slot.parse::<i32>().unwrap_or(out.len() as i32);
+                    if let Some(item) = item_from_nbt(it, s) {
+                        out.push(item);
                     }
                 }
-                Value::Compound(_) => {
-                    if let Some(Value::List(items)) = get(comp_v, "Items") {
-                        for it in items {
-                            if let Some(item) = item_from_nbt(it, out.len() as i32) {
-                                out.push(item);
-                            }
-                        }
-                    }
-                }
-                _ => {}
             }
         }
+        Some(Value::List(l)) => {
+            for it in l {
+                if let Some(item) = item_from_nbt(it, out.len() as i32) {
+                    out.push(item);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -524,14 +526,15 @@ mod gauge_tests {
 
     #[test]
     fn filling_tank_bar() {
+        // Create Stuff & Additions stores fluid in custom_data.tagStock (Double).
         let item = cmp(vec![
-            ("id", Value::String("createaddition:small_filling_tank".into())),
+            ("id", Value::String("create_sa:small_filling_tank".into())),
             ("count", Value::Int(1)),
             (
                 "components",
                 cmp(vec![(
                     "minecraft:custom_data",
-                    cmp(vec![("tag_stock", Value::Int(400))]),
+                    cmp(vec![("tagStock", Value::Double(400.0))]),
                 )]),
             ),
         ]);
@@ -542,21 +545,21 @@ mod gauge_tests {
     }
 
     #[test]
-    fn fueling_tank_medium_capacity() {
+    fn fueling_tank_large_full() {
         let item = cmp(vec![
-            ("id", Value::String("createaddition:medium_fueling_tank".into())),
+            ("id", Value::String("create_sa:large_fueling_tank".into())),
             ("count", Value::Int(1)),
             (
                 "components",
                 cmp(vec![(
                     "minecraft:custom_data",
-                    cmp(vec![("tag_stock", Value::Int(800))]),
+                    cmp(vec![("tagStock", Value::Double(3200.0))]),
                 )]),
             ),
         ]);
         let it = item_from_nbt(&item, 0).unwrap();
-        let bar = it.bar.expect("tank bar");
-        assert!((bar.frac - 0.5).abs() < 1e-3, "800/1600 = 0.5, got {}", bar.frac);
+        let bar = it.bar.expect("tank bar even when full");
+        assert!((bar.frac - 1.0).abs() < 1e-3, "3200/3200 = 1.0, got {}", bar.frac);
         assert_eq!(bar.color, [0xff, 0xa5, 0x65]);
     }
 
@@ -567,16 +570,35 @@ mod gauge_tests {
             ("count", Value::Int(1)),
             (
                 "components",
-                cmp(vec![(
-                    "minecraft:custom_data",
-                    cmp(vec![("Air", Value::Float(900.0))]),
-                )]),
+                cmp(vec![("create:banktank_air", Value::Int(900))]),
             ),
         ]);
         let it = item_from_nbt(&item, 0).unwrap();
         assert_eq!(it.outline, Some([255, 255, 255]));
         let bar = it.bar.expect("air bar");
         assert!((bar.frac - 0.5).abs() < 1e-3, "900/1800 = 0.5, got {}", bar.frac);
+    }
+
+    #[test]
+    fn backtank_capacity_enchant_raises_max() {
+        let item = cmp(vec![
+            ("id", Value::String("create:netherite_backtank".into())),
+            ("count", Value::Int(1)),
+            (
+                "components",
+                cmp(vec![
+                    ("create:banktank_air", Value::Int(900)),
+                    (
+                        "minecraft:enchantments",
+                        cmp(vec![("levels", cmp(vec![("create:capacity", Value::Int(1))]))]),
+                    ),
+                ]),
+            ),
+        ]);
+        let it = item_from_nbt(&item, 0).unwrap();
+        let bar = it.bar.expect("air bar");
+        // capacity 1 -> max 3600, 900/3600 = 0.25
+        assert!((bar.frac - 0.25).abs() < 1e-3, "900/3600 = 0.25, got {}", bar.frac);
     }
 
     #[test]
@@ -600,30 +622,37 @@ mod gauge_tests {
 
     #[test]
     fn toolbox_nested_contents() {
-        let inner = cmp(vec![
-            ("id", Value::String("minecraft:iron_ingot".into())),
-            ("count", Value::Int(64)),
+        // create:toolbox_inventory -> items -> items -> { "<slot>": stack }
+        let slot_map = cmp(vec![
+            (
+                "0",
+                cmp(vec![
+                    ("id", Value::String("create:shaft".into())),
+                    ("count", Value::Int(64)),
+                ]),
+            ),
+            (
+                "16",
+                cmp(vec![
+                    ("id", Value::String("create:belt_connector".into())),
+                    ("count", Value::Int(44)),
+                ]),
+            ),
         ]);
         let item = cmp(vec![
-            ("id", Value::String("create:toolbox".into())),
+            ("id", Value::String("create:brown_toolbox".into())),
             ("count", Value::Int(1)),
             (
                 "components",
                 cmp(vec![(
-                    "minecraft:custom_data",
-                    cmp(vec![(
-                        "Compartments",
-                        Value::List(vec![
-                            Value::List(vec![inner]),
-                            Value::List(vec![]),
-                        ]),
-                    )]),
+                    "create:toolbox_inventory",
+                    cmp(vec![("items", cmp(vec![("items", slot_map)]))]),
                 )]),
             ),
         ]);
         let it = item_from_nbt(&item, 0).unwrap();
-        assert_eq!(it.contents.len(), 1);
-        assert_eq!(it.contents[0].id, "minecraft:iron_ingot");
-        assert_eq!(it.contents[0].count, 64);
+        assert_eq!(it.contents.len(), 2);
+        assert!(it.contents.iter().any(|c| c.id == "create:shaft" && c.count == 64));
+        assert!(it.contents.iter().any(|c| c.id == "create:belt_connector"));
     }
 }

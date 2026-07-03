@@ -369,14 +369,23 @@ pub(crate) fn item_from_json(v: &J, default_slot: i32) -> Option<Item> {
     let is_toolbox = item.id.contains("toolbox");
     for root in [v.get("components"), v.get("tag"), v.get("nbt")].into_iter().flatten() {
         with_object(root, |obj| {
-            stock = stock.or_else(|| json_find_num(obj, "tag_stock"));
-            air = air.or_else(|| json_find_num(obj, "Air"));
+            stock = stock
+                .or_else(|| json_find_num(obj, "tagStock"))
+                .or_else(|| json_find_num(obj, "tag_stock"));
+            air = air
+                .or_else(|| json_find_num(obj, "create:banktank_air"))
+                .or_else(|| json_find_num(obj, "Air"));
             if is_toolbox && item.contents.is_empty() {
                 extract_toolbox_json(obj, &mut item.contents);
             }
         });
     }
-    item.apply_gauges(stock, air);
+    let capacity_ench = item
+        .enchants
+        .iter()
+        .find(|(id, _)| id.contains("create:capacity"))
+        .map(|(_, l)| *l);
+    item.apply_gauges(stock, air, capacity_ench);
     Some(item)
 }
 
@@ -397,41 +406,45 @@ fn json_find_num(v: &J, key: &str) -> Option<i64> {
     }
 }
 
-fn find_json_array<'a>(v: &'a J, key: &str) -> Option<&'a Vec<J>> {
+fn find_json<'a>(v: &'a J, key: &str) -> Option<&'a J> {
     match v {
         J::Object(m) => {
-            if let Some(J::Array(a)) = m.get(key) {
-                return Some(a);
+            if let Some(val) = m.get(key) {
+                return Some(val);
             }
-            m.values().find_map(|val| find_json_array(val, key))
+            m.values().find_map(|val| find_json(val, key))
         }
-        J::Array(a) => a.iter().find_map(|e| find_json_array(e, key)),
+        J::Array(a) => a.iter().find_map(|e| find_json(e, key)),
         _ => None,
     }
 }
 
+// Create toolbox: `create:toolbox_inventory -> items -> items -> {slot: item}`.
 fn extract_toolbox_json(v: &J, out: &mut Vec<Item>) {
-    let Some(compartments) = find_json_array(v, "Compartments") else { return };
-    for c in compartments {
-        match c {
-            J::Array(items) => {
-                for it in items {
-                    if let Some(item) = item_from_json(it, out.len() as i32) {
+    let Some(inv) = find_json(v, "create:toolbox_inventory") else { return };
+    let inner = inv
+        .get("items")
+        .and_then(|i| i.get("items"))
+        .or_else(|| inv.get("items"));
+    match inner {
+        Some(J::Object(m)) => {
+            for (slot, it) in m {
+                if it.get("id").is_some() {
+                    let s = slot.parse::<i32>().unwrap_or(out.len() as i32);
+                    if let Some(item) = item_from_json(it, s) {
                         out.push(item);
                     }
                 }
             }
-            J::Object(_) => {
-                if let Some(J::Array(items)) = c.get("Items") {
-                    for it in items {
-                        if let Some(item) = item_from_json(it, out.len() as i32) {
-                            out.push(item);
-                        }
-                    }
+        }
+        Some(J::Array(a)) => {
+            for it in a {
+                if let Some(item) = item_from_json(it, out.len() as i32) {
+                    out.push(item);
                 }
             }
-            _ => {}
         }
+        _ => {}
     }
 }
 

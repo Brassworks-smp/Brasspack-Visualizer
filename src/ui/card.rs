@@ -6,70 +6,49 @@ use super::{Action, ACCENT, GOLD};
 use crate::model::{format_count, prettify_id, Bar, Entry, EntryKind, Item};
 use crate::profiles::Profiles;
 use crate::render::atlas::Atlas;
-use crate::search::Expr;
-use crate::store::ci_contains;
+use crate::search::Highlight;
 
 type BpIndex = std::collections::HashMap<String, Vec<Item>>;
 
 // A drill-down request from a nested slot: (title, items, backpack uuid if any).
 pub(crate) type Drill = (String, Vec<Item>, Option<String>);
 
-const MATCH: Color32 = Color32::from_rgb(255, 214, 74);
+const MATCH: Color32 = Color32::from_rgb(255, 206, 70);
 
-fn item_has_term(item: &Item, term: &str) -> bool {
-    ci_contains(item.id.as_bytes(), term)
-        || item
-            .custom_name
-            .as_deref()
-            .is_some_and(|n| ci_contains(n.as_bytes(), term))
-        || item.lore.iter().any(|l| ci_contains(l.as_bytes(), term))
-        || item.enchants.iter().any(|(e, _)| ci_contains(e.as_bytes(), term))
-        || item
-            .head_ref
-            .as_deref()
-            .is_some_and(|r| ci_contains(r.as_bytes(), term))
+// Does this item or anything nested inside it satisfy the search?
+fn matches_deep(item: &Item, hl: &Highlight, bp: &BpIndex) -> bool {
+    hl.item_matches(item) || resolve_nested(item, bp).iter().any(|c| matches_deep(c, hl, bp))
 }
 
-// Does this item itself satisfy the query (ignoring nested contents)?
-fn matches_self(item: &Item, expr: &Expr) -> bool {
-    expr.eval(&|t| item_has_term(item, t))
-}
-
-// Does this item or anything nested inside it satisfy the query?
-fn matches_deep(item: &Item, expr: &Expr, bp: &BpIndex) -> bool {
-    matches_self(item, expr) || resolve_nested(item, bp).iter().any(|c| matches_deep(c, expr, bp))
-}
-
-// 0 = no match, 1 = a nested descendant matches (container highlight),
-// 2 = the item itself matches (direct highlight).
-fn match_level(item: &Item, hl: Option<&Expr>, bp: &BpIndex) -> u8 {
-    let Some(expr) = hl else { return 0 };
-    if matches_self(item, expr) {
+// 0 = no match, 1 = a nested descendant matches (container marker),
+// 2 = the item itself matches (direct marker).
+fn match_level(item: &Item, hl: Option<&Highlight>, bp: &BpIndex) -> u8 {
+    let Some(hl) = hl else { return 0 };
+    if hl.item_matches(item) {
         2
-    } else if resolve_nested(item, bp).iter().any(|c| matches_deep(c, expr, bp)) {
+    } else if resolve_nested(item, bp).iter().any(|c| matches_deep(c, hl, bp)) {
         1
     } else {
         0
     }
 }
 
-// Highlight a slot that matched the search. `strong` marks the item itself;
-// otherwise it marks a container whose nested contents matched.
+// Subtle marker for a slot that matched the search: a small gold corner tab.
+// `strong` marks the item itself; otherwise it marks a container whose nested
+// contents matched (drawn dimmer).
 fn paint_match(ui: &egui::Ui, rect: Rect, strong: bool) {
     let painter = ui.painter();
+    let col = if strong { MATCH } else { MATCH.gamma_multiply(0.5) };
+    // top-right corner tab (the nested badge lives top-left, count bottom-right)
+    let s = (rect.width() * 0.3).clamp(6.0, 11.0);
+    let tr = Pos2::new(rect.max.x - 1.5, rect.min.y + 1.5);
+    painter.add(egui::Shape::convex_polygon(
+        vec![tr, tr - Vec2::new(s, 0.0), tr + Vec2::new(0.0, s)],
+        col,
+        Stroke::NONE,
+    ));
     if strong {
-        painter.rect_filled(
-            rect.shrink(1.5),
-            Rounding::same(3.0),
-            Color32::from_rgba_unmultiplied(255, 214, 74, 46),
-        );
-        painter.rect_stroke(rect.shrink(1.5), Rounding::same(3.0), Stroke::new(2.0, MATCH));
-    } else {
-        painter.rect_stroke(
-            rect.shrink(1.5),
-            Rounding::same(3.0),
-            Stroke::new(1.5, MATCH.gamma_multiply(0.6)),
-        );
+        painter.rect_stroke(rect.shrink(1.0), Rounding::same(3.0), Stroke::new(1.0, col));
     }
 }
 
@@ -112,7 +91,7 @@ pub(crate) fn draw_card(
     slot: f32,
     gframe: usize,
     bp: &BpIndex,
-    hl: Option<&Expr>,
+    hl: Option<&Highlight>,
     profiles: &mut Profiles,
     actions: &mut Vec<Action>,
     animating: &mut bool,
@@ -199,7 +178,7 @@ pub(crate) fn draw_card(
                     for (idx, up) in entry.upgrades.iter().enumerate() {
                         let (rect, _) = ui.allocate_exact_size(Vec2::splat(slot), Sense::hover());
                         paint_slot(ui, atlas, profiles, rect, up, gframe, false, animating);
-                        if hl.is_some_and(|e| matches_self(up, e)) {
+                        if hl.is_some_and(|h| h.item_matches(up)) {
                             matches.push(rect);
                         }
                         let resp = ui.interact(rect, Id::new(("up", si, ei, idx)), Sense::hover());
@@ -475,7 +454,7 @@ fn item_tooltip(
     item: &Item,
     gframe: usize,
     bp: &BpIndex,
-    hl: Option<&Expr>,
+    hl: Option<&Highlight>,
     profiles: &mut Profiles,
 ) {
     ui.set_max_width(340.0);
@@ -606,7 +585,7 @@ pub(crate) fn nested_grid(
     atlas: &mut Atlas,
     items: &[Item],
     bp: &BpIndex,
-    hl: Option<&Expr>,
+    hl: Option<&Highlight>,
     profiles: &mut Profiles,
     gframe: usize,
     slot: f32,

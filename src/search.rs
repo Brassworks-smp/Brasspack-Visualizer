@@ -1,5 +1,5 @@
 
-use crate::model::{Entry, EntryKind};
+use crate::model::{Entry, EntryKind, Item};
 use crate::store::{ci_contains, EntryMeta, Interner, TextSource};
 
 // Boolean text query: terms combined with AND / OR / NOT and parentheses.
@@ -204,13 +204,57 @@ impl EnchOp {
             EnchOp::Gt => "level >",
         }
     }
-    fn test(self, level: i32, target: i32) -> bool {
+    pub fn test(self, level: i32, target: i32) -> bool {
         match self {
             EnchOp::Any => true,
             EnchOp::Gte => level >= target,
             EnchOp::Eq => level == target,
             EnchOp::Gt => level > target,
         }
+    }
+}
+
+// Per-item highlight test: does an individual item satisfy the active search
+// (text query and/or enchant filter), so it can be marked in the grid.
+pub struct Highlight {
+    text: Option<Expr>,
+    ench_name: Option<String>,
+    ench_op: EnchOp,
+    ench_level: i32,
+}
+
+fn item_has_term(item: &Item, term: &str) -> bool {
+    ci_contains(item.id.as_bytes(), term)
+        || item
+            .custom_name
+            .as_deref()
+            .is_some_and(|n| ci_contains(n.as_bytes(), term))
+        || item.lore.iter().any(|l| ci_contains(l.as_bytes(), term))
+        || item.enchants.iter().any(|(e, _)| ci_contains(e.as_bytes(), term))
+        || item
+            .head_ref
+            .as_deref()
+            .is_some_and(|r| ci_contains(r.as_bytes(), term))
+}
+
+impl Highlight {
+    // Does this item itself satisfy the active highlight criteria?
+    pub fn item_matches(&self, item: &Item) -> bool {
+        let text_ok = self
+            .text
+            .as_ref()
+            .map_or(true, |e| e.eval(&|t| item_has_term(item, t)));
+        let ench_ok = if self.ench_name.is_some() || self.ench_op != EnchOp::Any {
+            item.enchants.iter().any(|(id, lvl)| {
+                self.ench_name
+                    .as_ref()
+                    .map_or(true, |n| id.to_lowercase().contains(n))
+                    && self.ench_op.test(*lvl, self.ench_level)
+            })
+        } else {
+            true
+        };
+        text_ok && ench_ok
     }
 }
 
@@ -334,6 +378,33 @@ impl Filters {
         *self = Filters::default();
         self.text = quick.0;
         self.cat = quick.1;
+    }
+
+    // Build the per-item highlight from the active text/enchant search, if any.
+    pub fn highlight(&self) -> Option<Highlight> {
+        let text = if matches!(self.cat, TextCat::Any | TextCat::Item) {
+            parse_query(&self.text)
+        } else {
+            None
+        };
+        let ench_name = {
+            let t = self.ench_name.trim().to_lowercase();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        };
+        let ench_active = ench_name.is_some() || self.ench_op != EnchOp::Any;
+        if text.is_none() && !ench_active {
+            return None;
+        }
+        Some(Highlight {
+            text,
+            ench_name,
+            ench_op: self.ench_op,
+            ench_level: self.ench_level,
+        })
     }
 
     pub fn compile(&self) -> Compiled {

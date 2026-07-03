@@ -39,6 +39,12 @@ fn main() -> eframe::Result<()> {
             return Ok(());
         }
     }
+    if let Some(pos) = args.iter().position(|a| a == "--inspect") {
+        if let (Some(sub), Some(path)) = (args.get(pos + 1), args.get(pos + 2)) {
+            inspect_items(path, sub);
+            return Ok(());
+        }
+    }
     if let Some(pos) = args.iter().position(|a| a == "--head") {
         if let Some(skin) = args.get(pos + 1) {
             let out = args.get(pos + 2).map(String::as_str).unwrap_or("/tmp/head.png");
@@ -260,6 +266,38 @@ fn png_report(path: &str, out: Option<&str>) {
     let out = out.unwrap_or("/tmp/infiltrator_sample.png");
     img.save(out).expect("save png");
     println!("wrote {out} ({}x{}) from entry {idx}", img.width(), img.height());
+}
+
+fn inspect_items(path: &str, sub: &str) {
+    use fastnbt::Value;
+    let raw = std::fs::read(path).expect("read");
+    let bytes = parse::nbt::decompress(&raw);
+    let root: Value = fastnbt::from_bytes(&bytes).expect("nbt");
+    let mut found = 0;
+    fn walk(v: &fastnbt::Value, sub: &str, found: &mut usize) {
+        use fastnbt::Value;
+        if *found >= 4 {
+            return;
+        }
+        match v {
+            Value::Compound(m) => {
+                if let Some(Value::String(id)) = m.get("id") {
+                    if id.to_lowercase().contains(sub) {
+                        *found += 1;
+                        println!("\n===== match #{found} id={id} =====");
+                        println!("{:#?}", v);
+                    }
+                }
+                for val in m.values() {
+                    walk(val, sub, found);
+                }
+            }
+            Value::List(l) => l.iter().for_each(|e| walk(e, sub, found)),
+            _ => {}
+        }
+    }
+    walk(&root, &sub.to_lowercase(), &mut found);
+    println!("\n-- {found} match(es) for '{sub}' --");
 }
 
 fn install_theme(ctx: &egui::Context) {
