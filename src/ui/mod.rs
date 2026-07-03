@@ -322,7 +322,7 @@ impl App {
                         ch |= field(ui, &mut self.filters.z_max, "max", 72.0);
                     });
                     ui.label("");
-                    if ui.button("🧹 Clear filters").clicked() {
+                    if ui.button("Clear filters").clicked() {
                         self.filters.clear_advanced();
                         ch = true;
                     }
@@ -522,10 +522,10 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
-                ui.heading(egui::RichText::new("🎒 Backpack Infiltrator").color(ACCENT));
+                ui.heading(egui::RichText::new("Backpack Infiltrator").color(ACCENT));
                 ui.separator();
 
-                if ui.button("📂 Load files…").clicked() {
+                if ui.button("Load files…").clicked() {
                     if let Some(paths) = rfd::FileDialog::new()
                         .add_filter("Backpacks / Containers / Players", &["dat", "nbt", "json"])
                         .pick_files()
@@ -561,7 +561,7 @@ impl eframe::App for App {
             ui.add_space(2.0);
             let mut changed = false;
             ui.horizontal_wrapped(|ui| {
-                ui.label("🔎");
+                ui.label(egui::RichText::new("Find").weak());
                 changed |= ui
                     .add(
                         egui::TextEdit::singleline(&mut self.filters.text)
@@ -571,7 +571,7 @@ impl eframe::App for App {
                     .changed();
 
                 if ui
-                    .selectable_label(self.search_help, "❔")
+                    .selectable_label(self.search_help, "?")
                     .on_hover_text("Search syntax help")
                     .clicked()
                 {
@@ -597,7 +597,7 @@ impl eframe::App for App {
                 if ui
                     .selectable_label(
                         self.advanced_open || self.filters.advanced_active(),
-                        "⚙ Advanced",
+                        "Advanced",
                     )
                     .clicked()
                 {
@@ -605,7 +605,7 @@ impl eframe::App for App {
                 }
 
                 ui.separator();
-                ui.label(egui::RichText::new("✨ Enchant").color(GOLD));
+                ui.label(egui::RichText::new("Enchant").color(GOLD));
                 changed |= ui
                     .add(
                         egui::TextEdit::singleline(&mut self.filters.ench_name)
@@ -695,7 +695,7 @@ impl eframe::App for App {
                                         Layout::right_to_left(Align::Center),
                                         |ui| {
                                             if ui
-                                                .small_button("✕")
+                                                .small_button("×")
                                                 .on_hover_text("Remove")
                                                 .clicked()
                                             {
@@ -788,7 +788,7 @@ impl eframe::App for App {
                 } else {
                     center_message(
                         ui,
-                        "🔍",
+                        "?",
                         "No results - adjust filters or enable files on the left.",
                         Color32::from_gray(150),
                     );
@@ -901,7 +901,7 @@ impl eframe::App for App {
             painter.text(
                 screen.center(),
                 egui::Align2::CENTER_CENTER,
-                "⬇  Drop file(s) to load",
+                "Drop file(s) to load",
                 FontId::proportional(28.0),
                 ACCENT,
             );
@@ -979,7 +979,7 @@ impl eframe::App for App {
             let mut back = false;
             let mut drill: Option<card::Drill> = None;
 
-            egui::Window::new(egui::RichText::new(format!("📦  {title}")).color(ACCENT))
+            egui::Window::new(egui::RichText::new(format!("{title}")).color(ACCENT))
                 .id(Id::new("nested_popup"))
                 .collapsible(false)
                 .resizable(true)
@@ -994,7 +994,7 @@ impl eframe::App for App {
                             egui::RichText::new(format!("{count} item(s)")).weak().size(12.0),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("✕ Close").clicked() {
+                            if ui.button("× Close").clicked() {
                                 close = true;
                             }
                         });
@@ -1145,12 +1145,10 @@ fn center_message(ui: &mut egui::Ui, icon: &str, text: &str, color: Color32) {
 fn welcome_screen(ui: &mut egui::Ui) -> bool {
     let mut clicked = false;
     ui.vertical_centered(|ui| {
-        ui.add_space(ui.available_height() * 0.16);
-        ui.label(egui::RichText::new("🎒").size(58.0));
-        ui.add_space(2.0);
+        ui.add_space(ui.available_height() * 0.18);
         ui.label(
             egui::RichText::new("Backpack Infiltrator")
-                .size(26.0)
+                .size(30.0)
                 .strong()
                 .color(ACCENT),
         );
@@ -1163,7 +1161,7 @@ fn welcome_screen(ui: &mut egui::Ui) -> bool {
         ui.add_space(16.0);
         if ui
             .add(
-                egui::Button::new(egui::RichText::new("📂  Load files…").size(15.0).strong())
+                egui::Button::new(egui::RichText::new("Load files…").size(15.0).strong())
                     .min_size(Vec2::new(190.0, 42.0))
                     .fill(ACCENT.linear_multiply(0.85))
                     .rounding(Rounding::same(9.0)),
@@ -1176,9 +1174,9 @@ fn welcome_screen(ui: &mut egui::Ui) -> bool {
         ui.label(egui::RichText::new("SUPPORTED FILES").size(11.0).weak());
         ui.add_space(6.0);
         for (icon, name, desc) in [
-            ("🎒", "sophisticatedbackpacks.dat", "backpacks - items, upgrades, enchants"),
-            ("📦", "*_container_dump.json", "world containers - chests, barrels, shulkers"),
-            ("🧍", "*_player_dump.json", "players - inventory + ender chest"),
+            ("•", "sophisticatedbackpacks.dat", "backpacks - items, upgrades, enchants"),
+            ("•", "*_container_dump.json", "world containers - chests, barrels, shulkers"),
+            ("•", "*_player_dump.json", "players - inventory + ender chest"),
         ] {
             ui.horizontal(|ui| {
                 ui.add_space(ui.available_width() * 0.5 - 170.0);

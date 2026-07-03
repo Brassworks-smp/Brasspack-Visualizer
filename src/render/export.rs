@@ -172,6 +172,56 @@ fn blit_add(canvas: &mut RgbaImage, src: &RgbaImage, x: u32, y: u32) {
     }
 }
 
+fn draw_rect_px(canvas: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32, color: [u8; 3]) {
+    let (cw, ch) = canvas.dimensions();
+    for dy in 0..h {
+        for dx in 0..w {
+            let (px, py) = (x + dx, y + dy);
+            if px < cw && py < ch {
+                canvas.put_pixel(px, py, Rgba([color[0], color[1], color[2], 255]));
+            }
+        }
+    }
+}
+
+fn draw_missing(canvas: &mut RgbaImage, x: u32, y: u32, size: u32) {
+    // magenta/black checker, the classic missing-texture look
+    let (cw, ch) = canvas.dimensions();
+    let cell = (size / 4).max(1);
+    for dy in 0..size {
+        for dx in 0..size {
+            let (px, py) = (x + dx, y + dy);
+            if px < cw && py < ch {
+                let checker = ((dx / cell) + (dy / cell)) % 2 == 0;
+                let c = if checker { [240, 0, 240] } else { [30, 30, 30] };
+                canvas.put_pixel(px, py, Rgba([c[0], c[1], c[2], 255]));
+            }
+        }
+    }
+}
+
+fn draw_bar(canvas: &mut RgbaImage, x: u32, y: u32, size: u32, bar: &crate::model::Bar) {
+    let margin = (size as f32 * 0.12) as u32;
+    let h = ((size as f32 * 0.1) as u32).max(2);
+    let full = size.saturating_sub(2 * margin);
+    let by = y + size - h - (size as f32 * 0.08) as u32;
+    let bx = x + margin;
+    draw_rect_px(canvas, bx, by, full, h, [0, 0, 0]);
+    let fw = (full as f32 * bar.frac.clamp(0.0, 1.0)) as u32;
+    draw_rect_px(canvas, bx, by, fw, h.saturating_sub(1).max(1), bar.color);
+}
+
+fn draw_outline(canvas: &mut RgbaImage, x: u32, y: u32, size: u32, color: [u8; 3]) {
+    let (cw, ch) = canvas.dimensions();
+    for i in 0..size {
+        for &(px, py) in &[(x + i, y), (x + i, y + size - 1), (x, y + i), (x + size - 1, y + i)] {
+            if px < cw && py < ch {
+                canvas.put_pixel(px, py, Rgba([color[0], color[1], color[2], 255]));
+            }
+        }
+    }
+}
+
 fn draw_slot(canvas: &mut RgbaImage, x: u32, y: u32) {
     for dy in 0..SLOT {
         for dx in 0..SLOT {
@@ -229,11 +279,19 @@ pub fn render_entry(entry: &Entry, atlas: &Atlas, font: &McFont) -> RgbaImage {
                 let off = (SLOT - ICON) / 2;
                 if let Some(sprite) = atlas.sprite_scaled(&item.id, ICON) {
                     blit(&mut canvas, &sprite, x + off, y + off);
+                } else {
+                    draw_missing(&mut canvas, x + off, y + off, ICON);
                 }
                 if !item.enchants.is_empty() {
                     if let Some(glint) = atlas.glint_overlay(&item.id, ICON) {
                         blit_add(&mut canvas, &glint, x + off, y + off);
                     }
+                }
+                if let Some(bar) = &item.bar {
+                    draw_bar(&mut canvas, x + off, y + off, ICON, bar);
+                }
+                if let Some(oc) = item.outline {
+                    draw_outline(&mut canvas, x, y, SLOT, oc);
                 }
                 if item.count > 1 {
                     let s = format_count(item.count);

@@ -72,8 +72,8 @@ pub(crate) fn draw_card(
                             ui.painter().image(tex.id(), rect.shrink(2.0), full_uv(), Color32::WHITE);
                         })
                         .is_some();
-                if !drew_head {
-                    paint_texture(ui, atlas, rect.shrink(4.0), &entry.header_icon);
+                if !drew_head && !paint_texture(ui, atlas, rect.shrink(4.0), &entry.header_icon) {
+                    paint_missing(ui, rect.shrink(4.0));
                 }
                 if hdr_resp.hovered() {
                     paint_hover_ring(ui, rect);
@@ -111,14 +111,14 @@ pub(crate) fn draw_card(
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("🖼 PNG").on_hover_text("Export this as a PNG").clicked() {
+                if ui.button("PNG").on_hover_text("Export this as a PNG").clicked() {
                     actions.push(Action::Export(si, ei));
                 }
-                if ui.button("📋 Image").on_hover_text("Copy image to clipboard").clicked() {
+                if ui.button("Copy Img").on_hover_text("Copy image to clipboard").clicked() {
                     actions.push(Action::CopyImg(si, ei));
                 }
                 if !entry.copies.is_empty() {
-                    ui.menu_button("⧉ Copy ▾", |ui| {
+                    ui.menu_button("Copy…", |ui| {
                         for c in &entry.copies {
                             if ui.button(&c.label).clicked() {
                                 actions.push(Action::Copy(c.value.clone()));
@@ -317,10 +317,27 @@ fn full_uv() -> Rect {
     Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))
 }
 
-fn paint_texture(ui: &egui::Ui, atlas: &mut Atlas, rect: Rect, id: &str) {
+fn paint_texture(ui: &egui::Ui, atlas: &mut Atlas, rect: Rect, id: &str) -> bool {
     if let Some(tex) = atlas.texture(ui.ctx(), id) {
         ui.painter().image(tex.id(), rect, full_uv(), Color32::WHITE);
+        true
+    } else {
+        false
     }
+}
+
+// Placeholder for an item whose sprite isn't in the atlas, so it reads as a
+// missing texture rather than a blank slot.
+fn paint_missing(ui: &egui::Ui, rect: Rect) {
+    let painter = ui.painter();
+    painter.rect_filled(rect, Rounding::same(2.0), Color32::from_rgb(48, 44, 58));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "?",
+        FontId::proportional(rect.height() * 0.62),
+        Color32::from_rgb(150, 120, 180),
+    );
 }
 
 fn paint_icon(
@@ -341,7 +358,10 @@ fn paint_icon(
             return false;
         }
     }
-    paint_texture(ui, atlas, rect, &item.id);
+    if !paint_texture(ui, atlas, rect, &item.id) {
+        paint_missing(ui, rect);
+        return false;
+    }
     !item.enchants.is_empty() && paint_glint(ui, atlas, rect, &item.id, gframe)
 }
 
