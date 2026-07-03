@@ -1,4 +1,6 @@
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::{Entry, EntryKind, Item};
 use crate::store::{ci_contains, EntryMeta, Interner, TextSource};
 
@@ -182,7 +184,7 @@ pub fn parse_query(s: &str) -> Option<Expr> {
     p.parse_or()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnchOp {
     Any,
     Gte,
@@ -250,7 +252,7 @@ impl Highlight {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TextCat {
     Any,
     Owner,
@@ -271,7 +273,7 @@ impl TextCat {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DungeonFilter {
     Any,
     Only,
@@ -288,7 +290,8 @@ impl DungeonFilter {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Filters {
     pub text: String,
     pub cat: TextCat,
@@ -858,6 +861,28 @@ mod filter_tests {
             f.cat = TextCat::Owner;
         })
         .matches(&e));
+    }
+
+    #[test]
+    fn filters_serde_roundtrip() {
+        let mut f = Filters::default();
+        f.text = "diamond".into();
+        f.cat = TextCat::Item;
+        f.ench_op = EnchOp::Gte;
+        f.ench_level = 4;
+        f.min_count = "65".into();
+        let json = serde_json::to_string(&f).unwrap();
+        let back: Filters = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.text, "diamond");
+        assert!(back.cat == TextCat::Item);
+        assert!(back.ench_op == EnchOp::Gte);
+        assert_eq!(back.ench_level, 4);
+        assert_eq!(back.min_count, "65");
+
+        let partial: Filters = serde_json::from_str(r#"{"text":"gold"}"#).unwrap();
+        assert_eq!(partial.text, "gold");
+        assert!(partial.show_backpacks);
+        assert!(partial.cat == TextCat::Any);
     }
 
     #[test]

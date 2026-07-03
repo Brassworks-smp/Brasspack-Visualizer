@@ -14,6 +14,12 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Preset {
+    pub name: String,
+    pub filters: crate::search::Filters,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -24,6 +30,8 @@ pub struct Settings {
     pub mode: String,
     #[serde(default)]
     pub atlas: String,
+    #[serde(default)]
+    pub presets: Vec<Preset>,
 }
 
 fn default_zoom() -> f32 {
@@ -37,6 +45,7 @@ impl Default for Settings {
             zoom: 34.0,
             mode: "Auto".into(),
             atlas: String::new(),
+            presets: Vec::new(),
         }
     }
 }

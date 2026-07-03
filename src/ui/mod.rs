@@ -136,6 +136,8 @@ pub struct App {
     totals_open: bool,
     totals: Option<Totals>,
     totals_filter: String,
+    presets: Vec<crate::settings::Preset>,
+    preset_name: String,
     mode: Mode,
     slot: f32,
     loading_atlas: bool,
@@ -275,6 +277,8 @@ impl App {
             totals_open: false,
             totals: None,
             totals_filter: String::new(),
+            presets: settings.presets.clone(),
+            preset_name: String::new(),
             mode: Mode::from_label(&settings.mode),
             slot: settings.zoom.clamp(24.0, 64.0),
             loading_atlas: false,
@@ -588,6 +592,7 @@ impl App {
             zoom: self.slot,
             mode: self.mode.label().to_string(),
             atlas: self.atlas_path.clone().unwrap_or_default(),
+            presets: self.presets.clone(),
         }
         .save();
     }
@@ -756,6 +761,9 @@ impl eframe::App for App {
 
         let mut export: Option<bool> = None;
         let mut copy_tps = false;
+        let mut load_preset: Option<usize> = None;
+        let mut save_preset = false;
+        let mut delete_preset: Option<usize> = None;
 
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             ui.add_space(6.0);
@@ -817,6 +825,37 @@ impl eframe::App for App {
                         copy_tps = true;
                         ui.close_menu();
                     }
+                });
+
+                ui.menu_button("Presets ▾", |ui| {
+                    if self.presets.is_empty() {
+                        ui.label(egui::RichText::new("no saved presets").weak());
+                    } else {
+                        for (i, p) in self.presets.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui.button(&p.name).clicked() {
+                                    load_preset = Some(i);
+                                    ui.close_menu();
+                                }
+                                if ui.small_button("🗑").on_hover_text("Delete preset").clicked() {
+                                    delete_preset = Some(i);
+                                    ui.close_menu();
+                                }
+                            });
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.preset_name)
+                                .hint_text("name")
+                                .desired_width(120.0),
+                        );
+                        if ui.button("Save current").clicked() {
+                            save_preset = true;
+                            ui.close_menu();
+                        }
+                    });
                 });
             });
 
@@ -1323,6 +1362,34 @@ impl eframe::App for App {
             let n = tps.len();
             ctx.copy_text(tps.join("\n"));
             self.toast(format!("Copied {n} TP command(s)"));
+        }
+
+        if let Some(i) = load_preset {
+            if let Some(p) = self.presets.get(i) {
+                self.filters = p.filters.clone();
+                self.run_search();
+            }
+        }
+        if save_preset {
+            let name = self.preset_name.trim().to_string();
+            if !name.is_empty() {
+                let filters = self.filters.clone();
+                if let Some(existing) = self.presets.iter_mut().find(|p| p.name == name) {
+                    existing.filters = filters;
+                } else {
+                    self.presets.push(crate::settings::Preset { name, filters });
+                }
+                self.preset_name.clear();
+                self.save_settings();
+                self.toast("Preset saved");
+            }
+        }
+        if let Some(i) = delete_preset {
+            if i < self.presets.len() {
+                self.presets.remove(i);
+                self.save_settings();
+                self.toast("Preset deleted");
+            }
         }
 
         if do_load {
