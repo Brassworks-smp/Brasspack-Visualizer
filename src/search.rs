@@ -714,4 +714,159 @@ mod query_tests {
         assert!(!m("gold diamond", "only gold"));
         assert!(m("   ", "whatever"));
     }
+
+    #[test]
+    fn and_binds_tighter_than_or() {
+        assert!(m("a or b and c", "just a"));
+        assert!(!m("a or b and c", "only zb"));
+        assert!(m("a or b and c", "zb zc"));
+        assert!(!m("a or b and c", "zc only"));
+    }
+
+    #[test]
+    fn grouping_and_not() {
+        assert!(m("(a or b) and (c or d)", "a d"));
+        assert!(!m("(a or b) and (c or d)", "a only"));
+        assert!(m("not (a or b)", "just c"));
+        assert!(!m("not (a or b)", "has a here"));
+        assert!(m("gold and not silver", "gold bar"));
+        assert!(!m("gold and not silver", "gold and silver"));
+    }
+
+    #[test]
+    fn amp_pipe_aliases_and_case() {
+        assert!(m("a && b", "a b"));
+        assert!(!m("a && b", "a only"));
+        assert!(m("a || b", "b only"));
+        assert!(m("DIAMOND", "a diamond"));
+        assert!(m("AND", "the word and"));
+    }
+
+    #[test]
+    fn tolerates_unbalanced_parens() {
+        assert!(m("(diamond or gold", "a gold bar"));
+        assert!(m("diamond)", "a diamond"));
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use crate::model::{Entry, EntryKind, Item};
+
+    fn item(id: &str, count: i64) -> Item {
+        Item {
+            id: id.into(),
+            count,
+            ..Default::default()
+        }
+    }
+
+    fn enchanted(id: &str, level: i32) -> Item {
+        Item {
+            id: "minecraft:diamond_sword".into(),
+            count: 1,
+            enchants: vec![(id.into(), level)],
+            ..Default::default()
+        }
+    }
+
+    fn make(kind: EntryKind, items: Vec<Item>) -> Entry {
+        let mut e = Entry {
+            kind,
+            items,
+            header_icon: "minecraft:barrel".into(),
+            dimension: "minecraft:the_nether".into(),
+            owner: "steve".into(),
+            uuid: "abc-123".into(),
+            ..Default::default()
+        };
+        e.finalize("");
+        e
+    }
+
+    fn compiled(build: impl FnOnce(&mut Filters)) -> Compiled {
+        let mut f = Filters::default();
+        build(&mut f);
+        f.compile()
+    }
+
+    #[test]
+    fn kind_visibility() {
+        let bp = make(EntryKind::Backpack, vec![item("minecraft:stone", 1)]);
+        let c = compiled(|f| f.show_backpacks = false);
+        assert!(!c.matches(&bp));
+        assert!(compiled(|_| {}).matches(&bp));
+    }
+
+    #[test]
+    fn hide_empty_and_dungeon() {
+        let empty = make(EntryKind::Container, vec![]);
+        assert!(!compiled(|_| {}).matches(&empty));
+        assert!(compiled(|f| f.hide_empty = false).matches(&empty));
+
+        let mut dungeon = make(EntryKind::Container, vec![item("minecraft:stone", 1)]);
+        dungeon.is_dungeon = true;
+        assert!(!compiled(|f| f.dungeon = DungeonFilter::Hide).matches(&dungeon));
+        assert!(compiled(|f| f.dungeon = DungeonFilter::Only).matches(&dungeon));
+    }
+
+    #[test]
+    fn coord_range_and_min_count() {
+        let mut e = make(EntryKind::Container, vec![item("minecraft:diamond", 64)]);
+        e.coords = Some((100, 64, -200));
+        assert!(compiled(|f| f.x_min = "50".into()).matches(&e));
+        assert!(!compiled(|f| f.x_max = "50".into()).matches(&e));
+        assert!(compiled(|f| f.min_count = "64".into()).matches(&e));
+        assert!(!compiled(|f| f.min_count = "65".into()).matches(&e));
+    }
+
+    #[test]
+    fn enchant_and_text_categories() {
+        let e = make(EntryKind::Container, vec![enchanted("minecraft:sharpness", 5)]);
+        assert!(compiled(|f| {
+            f.ench_op = EnchOp::Gte;
+            f.ench_level = 5;
+        })
+        .matches(&e));
+        assert!(!compiled(|f| {
+            f.ench_op = EnchOp::Gt;
+            f.ench_level = 5;
+        })
+        .matches(&e));
+        assert!(compiled(|f| f.ench_name = "sharp".into()).matches(&e));
+
+        assert!(compiled(|f| {
+            f.text = "sword".into();
+            f.cat = TextCat::Item;
+        })
+        .matches(&e));
+        assert!(compiled(|f| {
+            f.text = "barrel".into();
+            f.cat = TextCat::Type;
+        })
+        .matches(&e));
+
+        let bp = make(EntryKind::Backpack, vec![item("minecraft:stone", 1)]);
+        assert!(compiled(|f| {
+            f.text = "steve".into();
+            f.cat = TextCat::Owner;
+        })
+        .matches(&bp));
+        assert!(!compiled(|f| {
+            f.text = "steve".into();
+            f.cat = TextCat::Owner;
+        })
+        .matches(&e));
+    }
+
+    #[test]
+    fn dimension_and_player_fields() {
+        let e = make(EntryKind::Container, vec![item("minecraft:stone", 1)]);
+        assert!(compiled(|f| f.dimension = "nether".into()).matches(&e));
+        assert!(!compiled(|f| f.dimension = "end".into()).matches(&e));
+        assert!(compiled(|f| f.player = "steve".into()).matches(&e));
+        assert!(compiled(|f| f.player = "abc-123".into()).matches(&e));
+        assert!(!compiled(|f| f.player = "alex".into()).matches(&e));
+    }
 }
