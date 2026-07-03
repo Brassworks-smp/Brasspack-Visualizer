@@ -812,7 +812,7 @@ impl eframe::App for App {
                     self.totals_open = !self.totals_open;
                 }
 
-                ui.menu_button("Export ▾", |ui| {
+                ui.menu_button("Export", |ui| {
                     if ui.button("Items → CSV").clicked() {
                         export = Some(false);
                         ui.close_menu();
@@ -827,7 +827,7 @@ impl eframe::App for App {
                     }
                 });
 
-                ui.menu_button("Presets ▾", |ui| {
+                ui.menu_button("Presets", |ui| {
                     if self.presets.is_empty() {
                         ui.label(egui::RichText::new("no saved presets").weak());
                     } else {
@@ -837,7 +837,7 @@ impl eframe::App for App {
                                     load_preset = Some(i);
                                     ui.close_menu();
                                 }
-                                if ui.small_button("🗑").on_hover_text("Delete preset").clicked() {
+                                if ui.small_button("×").on_hover_text("Delete preset").clicked() {
                                     delete_preset = Some(i);
                                     ui.close_menu();
                                 }
