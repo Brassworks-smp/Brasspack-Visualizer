@@ -12,27 +12,58 @@ macro_rules! packed_field {
 }
 
 pub(crate) fn extract(data: &Value, out: &mut Vec<Item>) {
-    let blocks = block_positions(data);
-    let Some(storages) = get(data, "items").and_then(as_list) else {
+    process(data, out, 0);
+}
+
+fn process(data: &Value, out: &mut Vec<Item>, depth: u8) {
+    if depth > 8 {
         return;
-    };
-    for (idx, st) in storages.iter().enumerate() {
-        let Some(value) = get(st, "storage").and_then(|s| get(s, "value")) else {
-            continue;
-        };
-        let mut contents = Vec::new();
-        storage_items(value, &mut contents);
-        if contents.is_empty() {
-            continue;
-        }
-        out.push(Item {
-            id: storage_block_id(st, &blocks),
-            count: 1,
-            slot: idx as i32,
-            contents,
-            ..Default::default()
-        });
     }
+    let blocks = block_positions(data);
+    if let Some(storages) = get(data, "items").and_then(as_list) {
+        for st in storages {
+            let Some(value) = get(st, "storage").and_then(|s| get(s, "value")) else {
+                continue;
+            };
+            let mut contents = Vec::new();
+            storage_items(value, &mut contents);
+            if contents.is_empty() {
+                continue;
+            }
+            out.push(Item {
+                id: storage_block_id(st, &blocks),
+                count: 1,
+                slot: out.len() as i32,
+                contents,
+                ..Default::default()
+            });
+        }
+    }
+    if let Some(subs) = get(data, "SubContraptions").and_then(as_list) {
+        for sub in subs {
+            if let Some(sd) = sub_contraption_data(sub) {
+                process(sd, out, depth + 1);
+            }
+        }
+    }
+}
+
+fn sub_contraption_data(sub: &Value) -> Option<&Value> {
+    if is_contraption(sub) {
+        return Some(sub);
+    }
+    for key in ["contraption", "Contraption", "data"] {
+        if let Some(d) = get(sub, key) {
+            if is_contraption(d) {
+                return Some(d);
+            }
+        }
+    }
+    None
+}
+
+fn is_contraption(v: &Value) -> bool {
+    get(v, "items").is_some() || get(v, "Blocks").is_some()
 }
 
 fn storage_items(value: &Value, out: &mut Vec<Item>) {
@@ -61,6 +92,7 @@ fn storage_type_fallback(st: &Value) -> Option<String> {
         match ty {
             "create:vault" => "create:item_vault",
             "create:depot" => "create:depot",
+            "create_connected:fluid_vessel" => "create_connected:fluid_vessel",
             _ => "minecraft:chest",
         }
         .to_string(),
@@ -211,5 +243,45 @@ mod tests {
         let mut out = Vec::new();
         extract(&data, &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn recurses_sub_contraptions() {
+        let inner = cmp(vec![
+            ("pos", ints(&[0, 0, 0])),
+            (
+                "storage",
+                cmp(vec![
+                    ("type", Value::String("create:simple".into())),
+                    (
+                        "value",
+                        cmp(vec![(
+                            "items",
+                            cmp(vec![(
+                                "0",
+                                cmp(vec![
+                                    ("id", Value::String("minecraft:emerald".into())),
+                                    ("count", Value::Int(3)),
+                                ]),
+                            )]),
+                        )]),
+                    ),
+                ]),
+            ),
+        ]);
+        let sub = cmp(vec![(
+            "contraption",
+            cmp(vec![("items", Value::List(vec![inner]))]),
+        )]);
+        let data = cmp(vec![
+            ("items", Value::List(vec![])),
+            ("SubContraptions", Value::List(vec![sub])),
+        ]);
+        let mut out = Vec::new();
+        extract(&data, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].contents.len(), 1);
+        assert_eq!(out[0].contents[0].id, "minecraft:emerald");
+        assert_eq!(out[0].contents[0].count, 3);
     }
 }

@@ -504,7 +504,6 @@ fn gather_text(v: &serde_json::Value, out: &mut String) {
 mod gauge_tests {
     use super::*;
     use fastnbt::Value;
-    use std::collections::HashMap;
 
     fn cmp(pairs: Vec<(&str, Value)>) -> Value {
         Value::Compound(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
