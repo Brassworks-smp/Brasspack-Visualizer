@@ -6,6 +6,7 @@ mod profiles;
 mod render;
 mod search;
 mod settings;
+mod store;
 mod ui;
 
 use eframe::egui;
@@ -15,6 +16,21 @@ fn main() -> eframe::Result<()> {
     if let Some(pos) = args.iter().position(|a| a == "--parse") {
         if let Some(path) = args.get(pos + 1) {
             parse_report(path);
+            return Ok(());
+        }
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--store-mem") {
+        if let Some(path) = args.get(pos + 1) {
+            let is_backpack = !path.to_lowercase().ends_with(".json");
+            let t = std::time::Instant::now();
+            let s = store::Store::open(path, is_backpack, None).expect("store");
+            println!("store opened: {} entries in {:?}", s.len(), t.elapsed());
+            return Ok(());
+        }
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--verify-store") {
+        if let Some(path) = args.get(pos + 1) {
+            verify_store(path);
             return Ok(());
         }
     }
@@ -113,6 +129,104 @@ fn parse_report(path: &str) {
         }
         Err(e) => eprintln!("error: {e}"),
     }
+}
+
+fn verify_store(path: &str) {
+    use search::{DungeonFilter, EnchOp, Filters, TextCat};
+    let is_backpack = !path.to_lowercase().ends_with(".json");
+    let eager = if is_backpack {
+        parse::nbt::load_backpacks(path)
+    } else {
+        parse::containers::load_json(path, None)
+    }
+    .expect("eager parse");
+    let store = store::Store::open(path, is_backpack, None).expect("store open");
+
+    println!("counts: eager={} store={}", eager.len(), store.len());
+    if eager.len() != store.len() {
+        eprintln!("COUNT MISMATCH");
+    }
+
+    let mut cases: Vec<(&str, Filters)> = Vec::new();
+    let mut f = Filters::default();
+    cases.push(("default", f.clone()));
+    f = Filters::default();
+    f.text = "diamond".into();
+    cases.push(("text=diamond", f.clone()));
+    f = Filters::default();
+    f.text = "netherite".into();
+    f.cat = TextCat::Item;
+    cases.push(("item-text=netherite", f.clone()));
+    f = Filters::default();
+    f.item = "shulker".into();
+    cases.push(("item=shulker", f.clone()));
+    f = Filters::default();
+    f.nbt = "enchant".into();
+    cases.push(("nbt=enchant", f.clone()));
+    f = Filters::default();
+    f.dungeon = DungeonFilter::Only;
+    cases.push(("dungeon-only", f.clone()));
+    f = Filters::default();
+    f.dimension = "nether".into();
+    cases.push(("dim=nether", f.clone()));
+    f = Filters::default();
+    f.ctype = "chest".into();
+    cases.push(("ctype=chest", f.clone()));
+    f = Filters::default();
+    f.min_count = "65".into();
+    cases.push(("min_count=65", f.clone()));
+    f = Filters::default();
+    f.ench_op = EnchOp::Gte;
+    f.ench_level = 5;
+    cases.push(("ench>=5", f.clone()));
+    f = Filters::default();
+    f.x_min = "0".into();
+    f.x_max = "500".into();
+    cases.push(("x=0..500", f.clone()));
+    f = Filters::default();
+    f.player = "e".into();
+    cases.push(("player~e", f.clone()));
+
+    for (name, filt) in &cases {
+        let c = filt.compile();
+        let eager_hits: Vec<u32> = eager
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| c.matches(e))
+            .map(|(i, _)| i as u32)
+            .collect();
+        let mut store_hits = store.filter(&c);
+        store_hits.sort_unstable();
+        let mismatch = eager_hits != store_hits;
+        println!(
+            "  {:16} eager={:>7} store={:>7} {}",
+            name,
+            eager_hits.len(),
+            store_hits.len(),
+            if mismatch { "<<< MISMATCH" } else { "ok" }
+        );
+        if mismatch {
+            let ea: std::collections::HashSet<u32> = eager_hits.iter().copied().collect();
+            let st: std::collections::HashSet<u32> = store_hits.iter().copied().collect();
+            let only_eager: Vec<u32> = eager_hits.iter().copied().filter(|i| !st.contains(i)).take(3).collect();
+            let only_store: Vec<u32> = store_hits.iter().copied().filter(|i| !ea.contains(i)).take(3).collect();
+            println!("      only_eager={:?} only_store={:?}", only_eager, only_store);
+        }
+    }
+
+    let mut checked = 0;
+    for i in (0..eager.len()).step_by((eager.len() / 50).max(1)) {
+        let m = store.entry(i).expect("materialize");
+        let e = &eager[i];
+        if m.title != e.title || m.coords != e.coords || m.items.len() != e.items.len() {
+            eprintln!(
+                "  ENTRY MISMATCH i={i}: title {:?}/{:?} coords {:?}/{:?} items {}/{}",
+                m.title, e.title, m.coords, e.coords, m.items.len(), e.items.len()
+            );
+        }
+        checked += 1;
+    }
+    println!("materialize spot-checks: {checked} ok");
 }
 
 fn png_report(path: &str, out: Option<&str>) {

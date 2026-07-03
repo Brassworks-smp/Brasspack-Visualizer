@@ -14,6 +14,7 @@ use crate::model::{Entry, EntryKind, Item};
 use crate::profiles::{Fetched, Profiles};
 use crate::search::{DungeonFilter, EnchOp, Filters, TextCat};
 use crate::settings::{SavedFile, Settings};
+use crate::store::Store;
 
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(86, 171, 96);
 pub(crate) const GOLD: Color32 = Color32::from_rgb(212, 155, 36);
@@ -21,7 +22,7 @@ const ERRC: Color32 = Color32::from_rgb(220, 90, 80);
 
 enum Msg {
     Assets(Result<(Atlas, McFont), String>),
-    Data(u64, Result<Vec<Entry>, String>),
+    Data(u64, Result<Store, String>),
     Profile(String, Result<Fetched, String>),
 }
 
@@ -60,7 +61,13 @@ struct Source {
     enabled: bool,
     loading: bool,
     error: Option<String>,
-    entries: Vec<Entry>,
+    store: Option<Store>,
+}
+
+impl Source {
+    fn len(&self) -> usize {
+        self.store.as_ref().map_or(0, |s| s.len())
+    }
 }
 
 pub(crate) enum Action {
@@ -103,7 +110,7 @@ fn filename(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
-fn parse_path(path: &str, mode: Mode) -> Result<Vec<Entry>, String> {
+fn open_store(path: &str, mode: Mode) -> Result<Store, String> {
     use crate::parse::containers::JsonKind;
     let is_json = path.to_lowercase().ends_with(".json");
     let (is_backpack, forced): (bool, Option<JsonKind>) = match mode {
@@ -112,11 +119,7 @@ fn parse_path(path: &str, mode: Mode) -> Result<Vec<Entry>, String> {
         Mode::Containers => (false, Some(JsonKind::Containers)),
         Mode::Players => (false, Some(JsonKind::Players)),
     };
-    if is_backpack {
-        crate::parse::nbt::load_backpacks(path)
-    } else {
-        crate::parse::containers::load_json(path, forced)
-    }
+    Store::open(path, is_backpack, forced)
 }
 
 impl App {
@@ -188,13 +191,13 @@ impl App {
             enabled,
             loading: true,
             error: None,
-            entries: Vec::new(),
+            store: None,
         });
 
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
-            let res = parse_path(&path, mode);
+            let res = open_store(&path, mode);
             let _ = tx.send(Msg::Data(id, res));
             ctx.request_repaint();
         });
@@ -208,11 +211,10 @@ impl App {
             if !s.enabled {
                 continue;
             }
-            for (ei, e) in s.entries.iter().enumerate() {
-                total += 1;
-                if c.matches(e) {
-                    out.push((si, ei));
-                }
+            let Some(store) = &s.store else { continue };
+            total += store.len();
+            for ei in store.filter(&c) {
+                out.push((si, ei as usize));
             }
         }
         self.filtered = out;
@@ -351,8 +353,8 @@ impl App {
                         let s = &mut self.sources[pos];
                         s.loading = false;
                         match res {
-                            Ok(e) => {
-                                s.entries = e;
+                            Ok(store) => {
+                                s.store = Some(store);
                                 s.error = None;
                             }
                             Err(e) => s.error = Some(e),
@@ -393,22 +395,8 @@ impl App {
     fn apply_username(&mut self, uuid: &str, name: &str) -> bool {
         let mut changed = false;
         for s in &mut self.sources {
-            for e in &mut s.entries {
-                if e.uuid != uuid {
-                    continue;
-                }
-                if e.owner.is_empty() || e.owner == "unknown" {
-                    e.title = e.title.replacen("Unknown", name, 1);
-                    for (label, value) in &mut e.meta {
-                        if (label == "Owner" || label == "Player") && value == "Unknown" {
-                            *value = name.to_string();
-                        }
-                    }
-                    e.owner = name.to_lowercase();
-                    if !e.search_blob.contains(&e.owner) {
-                        e.search_blob.push('\n');
-                        e.search_blob.push_str(&e.owner);
-                    }
+            if let Some(store) = &mut s.store {
+                if store.apply_username(uuid, name) {
                     changed = true;
                 }
             }
@@ -422,7 +410,8 @@ impl App {
             if !s.enabled {
                 continue;
             }
-            for e in &s.entries {
+            let Some(store) = &s.store else { continue };
+            for e in store.mem_entries() {
                 if !e.uuid.is_empty() && !e.items.is_empty() {
                     self.bp_index
                         .entry(e.uuid.clone())
@@ -432,10 +421,13 @@ impl App {
         }
     }
 
-    fn render_png(&self, si: usize, ei: usize) -> Result<image::RgbaImage, String> {
+    fn entry(&self, si: usize, ei: usize) -> Option<Entry> {
+        self.sources.get(si)?.store.as_ref()?.entry(ei)
+    }
+
+    fn render_png(&self, entry: &Entry) -> Result<image::RgbaImage, String> {
         let atlas = self.atlas.as_ref().ok_or("atlas not loaded")?;
         let font = self.font.as_ref().ok_or("font not loaded")?;
-        let entry = &self.sources[si].entries[ei];
         Ok(crate::render::export::render_entry(entry, atlas, font))
     }
 }
@@ -645,7 +637,7 @@ impl eframe::App for App {
                                         egui::RichText::new(format!(
                                             "{} · {} entries",
                                             s.mode.label(),
-                                            s.entries.len()
+                                            s.len()
                                         ))
                                         .weak()
                                         .size(11.0),
@@ -735,7 +727,13 @@ impl eframe::App for App {
             let spacing = 12.0;
             let heights: Vec<f32> = filtered
                 .iter()
-                .map(|&(si, ei)| card_height(&sources[si].entries[ei], slot))
+                .map(|&(si, ei)| {
+                    sources[si]
+                        .store
+                        .as_ref()
+                        .map(|s| card_height(&s.metas()[ei], slot))
+                        .unwrap_or(0.0)
+                })
                 .collect();
 
             egui::ScrollArea::vertical()
@@ -758,19 +756,23 @@ impl eframe::App for App {
                             let mut child = ui.new_child(
                                 egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()),
                             );
-                            draw_card(
-                                &mut child,
-                                atlas,
-                                &sources[si].entries[ei],
-                                si,
-                                ei,
-                                slot,
-                                gframe,
-                                bp,
-                                profiles,
-                                &mut actions,
-                                &mut animating,
-                            );
+                            if let Some(entry) =
+                                sources[si].store.as_ref().and_then(|s| s.entry(ei))
+                            {
+                                draw_card(
+                                    &mut child,
+                                    atlas,
+                                    &entry,
+                                    si,
+                                    ei,
+                                    slot,
+                                    gframe,
+                                    bp,
+                                    profiles,
+                                    &mut actions,
+                                    &mut animating,
+                                );
+                            }
                         }
                         y += h + spacing;
                     }
@@ -811,7 +813,11 @@ impl eframe::App for App {
                     ctx.copy_text(s);
                     self.toast("Copied to clipboard");
                 }
-                Action::CopyImg(si, ei) => match self.render_png(si, ei) {
+                Action::CopyImg(si, ei) => match self
+                    .entry(si, ei)
+                    .ok_or_else(|| "entry unavailable".to_string())
+                    .and_then(|e| self.render_png(&e))
+                {
                     Ok(img) => {
                         if let Some(cb) = self.clipboard.as_mut() {
                             let (w, h) = (img.width() as usize, img.height() as usize);
@@ -828,21 +834,24 @@ impl eframe::App for App {
                     }
                     Err(e) => self.toast(format!("Render failed: {e}")),
                 },
-                Action::Export(si, ei) => match self.render_png(si, ei) {
-                    Ok(img) => {
-                        let name = default_png_name(&self.sources[si].entries[ei]);
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name(name)
-                            .add_filter("PNG", &["png"])
-                            .save_file()
-                        {
-                            match img.save(&path) {
-                                Ok(_) => self.toast("Saved PNG"),
-                                Err(e) => self.toast(format!("Save failed: {e}")),
+                Action::Export(si, ei) => match self.entry(si, ei) {
+                    Some(entry) => match self.render_png(&entry) {
+                        Ok(img) => {
+                            let name = default_png_name(&entry);
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name(name)
+                                .add_filter("PNG", &["png"])
+                                .save_file()
+                            {
+                                match img.save(&path) {
+                                    Ok(_) => self.toast("Saved PNG"),
+                                    Err(e) => self.toast(format!("Save failed: {e}")),
+                                }
                             }
                         }
-                    }
-                    Err(e) => self.toast(format!("Render failed: {e}")),
+                        Err(e) => self.toast(format!("Render failed: {e}")),
+                    },
+                    None => self.toast("Entry unavailable"),
                 },
                 Action::OpenNested(title, items) => {
                     self.popup.clear();
@@ -937,7 +946,7 @@ impl eframe::App for App {
 }
 
 fn source_color(s: &Source) -> Color32 {
-    match s.entries.first().map(|e| e.kind) {
+    match s.store.as_ref().and_then(|st| st.first_kind()) {
         Some(EntryKind::Backpack) => Color32::from_rgb(190, 150, 230),
         Some(EntryKind::Player) => Color32::from_rgb(110, 190, 240),
         Some(EntryKind::Container) => GOLD,

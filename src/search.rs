@@ -1,5 +1,6 @@
 
 use crate::model::{Entry, EntryKind};
+use crate::store::{ci_contains, EntryMeta, Interner, TextSource};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum EnchOp {
@@ -308,5 +309,128 @@ impl Compiled {
         }
 
         true
+    }
+
+    pub fn matches_meta(&self, m: &EntryMeta, text: &TextSource, it: &Interner) -> bool {
+        let kind_ok = match m.kind {
+            EntryKind::Backpack => self.show_backpacks,
+            EntryKind::Container => self.show_containers,
+            EntryKind::Player => self.show_players,
+        };
+        if !kind_ok {
+            return false;
+        }
+
+        if self.hide_empty && !m.has_items() {
+            return false;
+        }
+
+        match self.dungeon {
+            DungeonFilter::Only if !m.is_dungeon() => return false,
+            DungeonFilter::Hide if m.is_dungeon() => return false,
+            _ => {}
+        }
+
+        if self.coord_filter_active() {
+            match m.coords64() {
+                Some((x, y, z)) => {
+                    if !in_range(x, self.x) || !in_range(y, self.y) || !in_range(z, self.z) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+
+        if let Some(p) = &self.player {
+            if !m.owner.contains(p.as_str()) && !m.uuid.contains(p.as_str()) {
+                return false;
+            }
+        }
+        if let Some(t) = &self.ctype {
+            if !it.get(m.icon).to_lowercase().contains(t) {
+                return false;
+            }
+        }
+        if let Some(d) = &self.dimension {
+            if !it.get(m.dim).to_lowercase().contains(d) {
+                return false;
+            }
+        }
+        if let Some(i) = &self.item {
+            if !text_item(text, i) {
+                return false;
+            }
+        }
+        if let Some(n) = &self.nbt {
+            if !text_nbt(text, n) {
+                return false;
+            }
+        }
+        if let Some(mc) = self.min_count {
+            if (m.max_stack as i64) < mc {
+                return false;
+            }
+        }
+
+        if self.ench_name.is_some() || self.ench_op != EnchOp::Any {
+            let hit = m.enchants.iter().any(|(id, lvl)| {
+                self.ench_name
+                    .as_ref()
+                    .map_or(true, |n| it.get(*id).to_lowercase().contains(n))
+                    && self.ench_op.test(*lvl as i32, self.ench_level)
+            });
+            if !hit {
+                return false;
+            }
+        }
+
+        if let Some(q) = &self.text {
+            let ok = match self.cat {
+                TextCat::Any => text_any(text, q),
+                TextCat::Owner => {
+                    matches!(m.kind, EntryKind::Backpack | EntryKind::Player)
+                        && (m.owner.contains(q.as_str()) || m.uuid.contains(q.as_str()))
+                }
+                TextCat::Item => text_item(text, q),
+                TextCat::Type => it.get(m.icon).to_lowercase().contains(q),
+                TextCat::Upgrade => text_upgrade(text, q),
+            };
+            if !ok {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+fn text_item(text: &TextSource, q: &str) -> bool {
+    match text {
+        TextSource::Slice(b) => ci_contains(b, q),
+        TextSource::Blob { search, .. } => search.contains(q),
+    }
+}
+
+fn text_nbt(text: &TextSource, q: &str) -> bool {
+    match text {
+        TextSource::Slice(b) => ci_contains(b, q),
+        TextSource::Blob { search, nbt, .. } => nbt.contains(q) || search.contains(q),
+    }
+}
+
+fn text_any(text: &TextSource, q: &str) -> bool {
+    match text {
+        TextSource::Slice(b) => ci_contains(b, q),
+        TextSource::Blob { search, nbt, .. } => search.contains(q) || nbt.contains(q),
+    }
+}
+
+fn text_upgrade(text: &TextSource, q: &str) -> bool {
+    match text {
+        TextSource::Slice(_) => false,
+        TextSource::Blob { upgrades, .. } => {
+            upgrades.iter().any(|u| u.id.to_lowercase().contains(q))
+        }
     }
 }

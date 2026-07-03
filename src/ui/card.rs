@@ -23,10 +23,11 @@ fn has_openable(item: &Item, bp: &BpIndex) -> bool {
     !resolve_nested(item, bp).is_empty()
 }
 
-pub(crate) fn card_height(e: &Entry, slot: f32) -> f32 {
-    let header = 56.0_f32.max(26.0 + e.meta.len() as f32 * 16.0);
-    let upgrades = if e.upgrades.is_empty() { 0.0 } else { 4.0 + slot };
-    12.0 + header + 8.0 + upgrades + 6.0 + e.rows.max(1) as f32 * slot + 12.0 + 6.0
+pub(crate) fn card_height(m: &crate::store::EntryMeta, slot: f32) -> f32 {
+    let header = 56.0_f32.max(26.0 + m.meta_len as f32 * 16.0);
+    let upgrades = if m.has_upgrades() { 4.0 + slot } else { 0.0 };
+    let rows = (m.rows as usize).max(1) as f32;
+    12.0 + header + 8.0 + upgrades + 6.0 + rows * slot + 12.0 + 6.0
 }
 
 #[allow(clippy::too_many_arguments)]

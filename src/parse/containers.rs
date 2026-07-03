@@ -167,14 +167,14 @@ fn flush_batch(batch: &mut Vec<RawElement>, kind: JsonKind, out: &mut Vec<Entry>
     batch.clear();
 }
 
-fn build_one(el: &RawElement, kind: JsonKind) -> Vec<Entry> {
+pub(crate) fn build_one(el: &RawElement, kind: JsonKind) -> Vec<Entry> {
     match kind {
         JsonKind::Containers => build_container(el).into_iter().collect(),
         JsonKind::Players => crate::parse::players::build_player(el),
     }
 }
 
-fn detect_kind(el: &RawElement) -> JsonKind {
+pub(crate) fn detect_kind(el: &RawElement) -> JsonKind {
     if el.ender_chest.is_some() || (el.uuid.is_some() && el.inventory.is_some()) {
         JsonKind::Players
     } else {
@@ -190,7 +190,7 @@ fn j_str(v: &Option<J>) -> Option<String> {
     }
 }
 
-fn build_container(el: &RawElement) -> Option<Entry> {
+pub(crate) fn build_container(el: &RawElement) -> Option<Entry> {
     let id = j_str(&el.id).unwrap_or_else(|| "minecraft:chest".into());
     let x = j_str(&el.x).unwrap_or_else(|| "?".into());
     let y = j_str(&el.y).unwrap_or_else(|| "?".into());
