@@ -2,6 +2,191 @@
 use crate::model::{Entry, EntryKind};
 use crate::store::{ci_contains, EntryMeta, Interner, TextSource};
 
+// Boolean text query: terms combined with AND / OR / NOT and parentheses.
+// Adjacent terms imply AND. Quotes group a phrase. Matching is substring,
+// case-insensitive (terms are lowercased at parse time).
+#[derive(Clone, Debug)]
+pub enum Expr {
+    Term(String),
+    Not(Box<Expr>),
+    And(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
+}
+
+impl Expr {
+    pub fn eval(&self, has: &dyn Fn(&str) -> bool) -> bool {
+        match self {
+            Expr::Term(t) => has(t),
+            Expr::Not(e) => !e.eval(has),
+            Expr::And(a, b) => a.eval(has) && b.eval(has),
+            Expr::Or(a, b) => a.eval(has) || b.eval(has),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+enum Tok {
+    And,
+    Or,
+    Not,
+    LParen,
+    RParen,
+    Term(String),
+}
+
+fn tokenize(s: &str) -> Vec<Tok> {
+    let mut out = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        match c {
+            c if c.is_whitespace() => {
+                chars.next();
+            }
+            '(' => {
+                chars.next();
+                out.push(Tok::LParen);
+            }
+            ')' => {
+                chars.next();
+                out.push(Tok::RParen);
+            }
+            '"' | '\'' => {
+                chars.next();
+                let mut buf = String::new();
+                for ch in chars.by_ref() {
+                    if ch == c {
+                        break;
+                    }
+                    buf.push(ch);
+                }
+                if !buf.is_empty() {
+                    out.push(Tok::Term(buf.to_lowercase()));
+                }
+            }
+            '&' => {
+                chars.next();
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                }
+                out.push(Tok::And);
+            }
+            '|' => {
+                chars.next();
+                if chars.peek() == Some(&'|') {
+                    chars.next();
+                }
+                out.push(Tok::Or);
+            }
+            _ => {
+                let mut buf = String::new();
+                while let Some(&ch) = chars.peek() {
+                    if ch.is_whitespace() || matches!(ch, '(' | ')' | '"' | '\'' | '&' | '|') {
+                        break;
+                    }
+                    buf.push(ch);
+                    chars.next();
+                }
+                match buf.to_ascii_lowercase().as_str() {
+                    "and" => out.push(Tok::And),
+                    "or" => out.push(Tok::Or),
+                    "not" => out.push(Tok::Not),
+                    _ => out.push(Tok::Term(buf.to_lowercase())),
+                }
+            }
+        }
+    }
+    out
+}
+
+struct Parser {
+    toks: Vec<Tok>,
+    pos: usize,
+}
+
+impl Parser {
+    fn peek(&self) -> Option<&Tok> {
+        self.toks.get(self.pos)
+    }
+    fn eat(&mut self) -> Option<Tok> {
+        let t = self.toks.get(self.pos).cloned();
+        if t.is_some() {
+            self.pos += 1;
+        }
+        t
+    }
+
+    // or := and ( OR and )*
+    fn parse_or(&mut self) -> Option<Expr> {
+        let mut left = self.parse_and()?;
+        while matches!(self.peek(), Some(Tok::Or)) {
+            self.eat();
+            match self.parse_and() {
+                Some(right) => left = Expr::Or(Box::new(left), Box::new(right)),
+                None => break,
+            }
+        }
+        Some(left)
+    }
+
+    // and := unary ( AND? unary )*   (adjacency implies AND)
+    fn parse_and(&mut self) -> Option<Expr> {
+        let mut left = self.parse_unary()?;
+        loop {
+            match self.peek() {
+                Some(Tok::And) => {
+                    self.eat();
+                    match self.parse_unary() {
+                        Some(right) => left = Expr::And(Box::new(left), Box::new(right)),
+                        None => break,
+                    }
+                }
+                Some(Tok::Term(_)) | Some(Tok::Not) | Some(Tok::LParen) => {
+                    match self.parse_unary() {
+                        Some(right) => left = Expr::And(Box::new(left), Box::new(right)),
+                        None => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        Some(left)
+    }
+
+    fn parse_unary(&mut self) -> Option<Expr> {
+        match self.peek() {
+            Some(Tok::Not) => {
+                self.eat();
+                Some(Expr::Not(Box::new(self.parse_unary()?)))
+            }
+            Some(Tok::LParen) => {
+                self.eat();
+                let e = self.parse_or();
+                if matches!(self.peek(), Some(Tok::RParen)) {
+                    self.eat();
+                }
+                e
+            }
+            Some(Tok::Term(_)) => {
+                if let Some(Tok::Term(t)) = self.eat() {
+                    Some(Expr::Term(t))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+pub fn parse_query(s: &str) -> Option<Expr> {
+    let toks = tokenize(s);
+    if toks.is_empty() {
+        return None;
+    }
+    let mut p = Parser { toks, pos: 0 };
+    p.parse_or()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum EnchOp {
     Any,
@@ -162,7 +347,7 @@ impl Filters {
         };
         let parse = |s: &str| s.trim().parse::<i64>().ok();
         Compiled {
-            text: low(&self.text),
+            text: parse_query(&self.text),
             cat: self.cat,
             show_backpacks: self.show_backpacks,
             show_containers: self.show_containers,
@@ -186,7 +371,7 @@ impl Filters {
 }
 
 pub struct Compiled {
-    text: Option<String>,
+    text: Option<Expr>,
     cat: TextCat,
     show_backpacks: bool,
     show_containers: bool,
@@ -292,16 +477,19 @@ impl Compiled {
             }
         }
 
-        if let Some(q) = &self.text {
+        if let Some(expr) = &self.text {
+            let icon = e.header_icon.to_lowercase();
             let ok = match self.cat {
-                TextCat::Any => e.search_blob.contains(q) || e.nbt_blob.contains(q),
+                TextCat::Any => expr.eval(&|q| e.search_blob.contains(q) || e.nbt_blob.contains(q)),
                 TextCat::Owner => {
                     matches!(e.kind, EntryKind::Backpack | EntryKind::Player)
-                        && (e.owner.contains(q) || e.uuid.contains(q))
+                        && expr.eval(&|q| e.owner.contains(q) || e.uuid.contains(q))
                 }
-                TextCat::Item => e.search_blob.contains(q),
-                TextCat::Type => e.header_icon.to_lowercase().contains(q),
-                TextCat::Upgrade => e.upgrades.iter().any(|u| u.id.to_lowercase().contains(q)),
+                TextCat::Item => expr.eval(&|q| e.search_blob.contains(q)),
+                TextCat::Type => expr.eval(&|q| icon.contains(q)),
+                TextCat::Upgrade => {
+                    expr.eval(&|q| e.upgrades.iter().any(|u| u.id.to_lowercase().contains(q)))
+                }
             };
             if !ok {
                 return false;
@@ -385,16 +573,19 @@ impl Compiled {
             }
         }
 
-        if let Some(q) = &self.text {
+        if let Some(expr) = &self.text {
             let ok = match self.cat {
-                TextCat::Any => text_any(text, q),
+                TextCat::Any => expr.eval(&|q| text_any(text, q)),
                 TextCat::Owner => {
                     matches!(m.kind, EntryKind::Backpack | EntryKind::Player)
-                        && (m.owner.contains(q.as_str()) || m.uuid.contains(q.as_str()))
+                        && expr.eval(&|q| m.owner.contains(q) || m.uuid.contains(q))
                 }
-                TextCat::Item => text_item(text, q),
-                TextCat::Type => it.get(m.icon).to_lowercase().contains(q),
-                TextCat::Upgrade => text_upgrade(text, q),
+                TextCat::Item => expr.eval(&|q| text_item(text, q)),
+                TextCat::Type => {
+                    let icon = it.get(m.icon).to_lowercase();
+                    expr.eval(&|q| icon.contains(q))
+                }
+                TextCat::Upgrade => expr.eval(&|q| text_upgrade(text, q)),
             };
             if !ok {
                 return false;
@@ -432,5 +623,35 @@ fn text_upgrade(text: &TextSource, q: &str) -> bool {
         TextSource::Blob { upgrades, .. } => {
             upgrades.iter().any(|u| u.id.to_lowercase().contains(q))
         }
+    }
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::parse_query;
+
+    fn m(query: &str, hay: &str) -> bool {
+        parse_query(query)
+            .map(|e| e.eval(&|t| hay.contains(t)))
+            .unwrap_or(true)
+    }
+
+    #[test]
+    fn boolean_ops() {
+        assert!(m("diamond and netherite", "a diamond and a netherite ingot"));
+        assert!(!m("diamond and netherite", "just a diamond"));
+        assert!(m("diamond or gold", "a gold bar"));
+        assert!(!m("diamond or gold", "an emerald"));
+        assert!(m("not diamond", "an emerald"));
+        assert!(!m("not diamond", "a diamond"));
+        assert!(m("gold and (diamond or emerald)", "gold and emerald"));
+        assert!(!m("gold and (diamond or emerald)", "gold and iron"));
+        assert!(m("\"diamond sword\"", "a diamond sword here"));
+        assert!(!m("\"diamond sword\"", "a diamond pickaxe"));
+        // adjacency implies AND
+        assert!(m("gold diamond", "gold and diamond"));
+        assert!(!m("gold diamond", "only gold"));
+        // empty query matches everything
+        assert!(m("   ", "whatever"));
     }
 }
