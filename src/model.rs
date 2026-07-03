@@ -112,11 +112,15 @@ impl Item {
             }
         }
 
-        // Vanilla durability bar.
-        if let (Some(dmg), Some(max)) = (self.damage, self.max_damage) {
-            if max > 0 && dmg > 0 {
-                let frac = ((max - dmg) as f32 / max as f32).clamp(0.0, 1.0);
-                self.bar = Some(Bar { frac, color: durability_rgb(frac) });
+        // Vanilla durability bar. Dumps frequently omit the max_damage
+        // component for vanilla gear, so fall back to a known-durability table.
+        if let Some(dmg) = self.damage {
+            let max = self.max_damage.filter(|m| *m > 0).or_else(|| vanilla_max_damage(&id));
+            if let Some(max) = max {
+                if max > 0 && dmg > 0 {
+                    let frac = ((max - dmg) as f32 / max as f32).clamp(0.0, 1.0);
+                    self.bar = Some(Bar { frac, color: durability_rgb(frac) });
+                }
             }
         }
     }
@@ -236,6 +240,76 @@ impl Entry {
         self.all_enchants = ench;
         self.max_stack = max_stack;
     }
+}
+
+// Max durability of common vanilla tools/armor, inferred from the item id.
+// Used when the max_damage component isn't present in the dump.
+fn vanilla_max_damage(id: &str) -> Option<i32> {
+    let n = id.rsplit(':').next().unwrap_or(id);
+
+    let tool_material = |suffix: &str| -> Option<i32> {
+        n.strip_suffix(suffix).map(|p| p.trim_end_matches('_')).and_then(|m| match m {
+            "wooden" => Some(59),
+            "stone" => Some(131),
+            "iron" => Some(250),
+            "golden" => Some(32),
+            "diamond" => Some(1561),
+            "netherite" => Some(2031),
+            _ => None,
+        })
+    };
+    for suffix in ["_pickaxe", "_axe", "_shovel", "_hoe", "_sword"] {
+        if let Some(d) = tool_material(suffix) {
+            return Some(d);
+        }
+    }
+
+    // Armor: per-slot base durability × material factor.
+    let armor = |slot_base: i32| -> Option<i32> {
+        let mat = if n.starts_with("leather_") {
+            5
+        } else if n.starts_with("chainmail_") || n.starts_with("iron_") {
+            15
+        } else if n.starts_with("golden_") {
+            7
+        } else if n.starts_with("diamond_") {
+            33
+        } else if n.starts_with("netherite_") {
+            37
+        } else {
+            return None;
+        };
+        Some(slot_base * mat)
+    };
+    if n.ends_with("_helmet") {
+        return armor(11);
+    }
+    if n.ends_with("_chestplate") {
+        return armor(16);
+    }
+    if n.ends_with("_leggings") {
+        return armor(15);
+    }
+    if n.ends_with("_boots") {
+        return armor(13);
+    }
+
+    Some(match n {
+        "turtle_helmet" => 275,
+        "bow" => 384,
+        "crossbow" => 465,
+        "trident" => 250,
+        "shield" => 336,
+        "elytra" => 432,
+        "fishing_rod" => 64,
+        "flint_and_steel" => 64,
+        "shears" => 238,
+        "carrot_on_a_stick" => 25,
+        "warped_fungus_on_a_stick" => 100,
+        "brush" => 64,
+        "mace" => 500,
+        _ => return None,
+    })
 }
 
 // Vanilla item durability bar color: green (full) through red (empty).

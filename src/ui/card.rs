@@ -78,8 +78,7 @@ pub(crate) fn draw_card(
                 if hdr_resp.hovered() {
                     paint_hover_ring(ui, rect);
                 }
-                let e = entry.clone();
-                hdr_resp.on_hover_ui(|ui| header_tooltip(ui, &e));
+                hdr_resp.on_hover_ui(|ui| header_tooltip(ui, entry));
                 if entry.kind == EntryKind::Backpack
                     && !entry.uuid.is_empty()
                     && (entry.owner.is_empty() || entry.owner == "unknown")
