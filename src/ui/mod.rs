@@ -140,6 +140,7 @@ pub struct App {
     preset_name: String,
     mode: Mode,
     slot: f32,
+    target_cols: usize,
     loading_atlas: bool,
     atlas_path: Option<String>,
     atlas_error: Option<String>,
@@ -160,6 +161,12 @@ pub struct App {
 
 fn filename(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
+}
+
+fn fit_slot(avail_w: f32, cols: usize, spacing: f32) -> f32 {
+    let n = cols.max(1) as f32;
+    let col_w = (avail_w - spacing * (n - 1.0)) / n;
+    ((col_w - 24.0) / 9.0).clamp(24.0, 64.0)
 }
 
 fn accumulate_item(it: &Item, map: &mut std::collections::HashMap<String, i64>) {
@@ -280,7 +287,8 @@ impl App {
             presets: settings.presets.clone(),
             preset_name: String::new(),
             mode: Mode::from_label(&settings.mode),
-            slot: settings.zoom.clamp(24.0, 64.0),
+            slot: 34.0,
+            target_cols: (settings.cols.max(1) as usize).min(8),
             loading_atlas: false,
             atlas_path: None,
             atlas_error: None,
@@ -589,7 +597,7 @@ impl App {
             .collect();
         Settings {
             files,
-            zoom: self.slot,
+            cols: self.target_cols as u32,
             mode: self.mode.label().to_string(),
             atlas: self.atlas_path.clone().unwrap_or_default(),
             presets: self.presets.clone(),
@@ -797,8 +805,10 @@ impl eframe::App for App {
                     });
 
                 ui.separator();
-                ui.label("Zoom");
-                let z = ui.add(egui::Slider::new(&mut self.slot, 24.0..=64.0).show_value(false));
+                ui.label("Columns");
+                let z = ui
+                    .add(egui::Slider::new(&mut self.target_cols, 1..=8).show_value(true))
+                    .on_hover_text("Number of cards to fit across (shrinks to fit, down to the min size)");
                 if z.drag_stopped() {
                     dirty = true;
                 }
@@ -1266,8 +1276,10 @@ impl eframe::App for App {
                 return;
             }
 
-            let slot = self.slot;
             let avail_w = ui.available_width();
+            let spacing = 12.0;
+            let slot = fit_slot(avail_w, self.target_cols, spacing);
+            self.slot = slot;
             let Some(atlas) = self.atlas.as_mut() else {
                 return;
             };
@@ -1276,17 +1288,6 @@ impl eframe::App for App {
             let bp = &self.bp_index;
             let hl = self.highlight.as_ref();
             let profiles = &mut self.profiles;
-            let spacing = 12.0;
-            let heights: Vec<f32> = filtered
-                .iter()
-                .map(|&(si, ei)| {
-                    sources[si]
-                        .store
-                        .as_ref()
-                        .map(|s| card_height(&s.metas()[ei], slot))
-                        .unwrap_or(0.0)
-                })
-                .collect();
 
             let cw = card_width(slot);
             let ncols = (((avail_w + spacing) / (cw + spacing)).floor() as usize)
@@ -1296,6 +1297,17 @@ impl eframe::App for App {
             } else {
                 (avail_w - spacing * (ncols as f32 - 1.0)) / ncols as f32
             };
+
+            let heights: Vec<f32> = filtered
+                .iter()
+                .map(|&(si, ei)| {
+                    sources[si]
+                        .store
+                        .as_ref()
+                        .map(|s| card_height(&s.metas()[ei], slot, col_w))
+                        .unwrap_or(0.0)
+                })
+                .collect();
 
             let mut col_y = vec![0.0f32; ncols];
             let mut placements: Vec<(f32, f32, f32)> = Vec::with_capacity(filtered.len());

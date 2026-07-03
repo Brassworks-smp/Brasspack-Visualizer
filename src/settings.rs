@@ -24,8 +24,8 @@ pub struct Preset {
 pub struct Settings {
     #[serde(default)]
     pub files: Vec<SavedFile>,
-    #[serde(default = "default_zoom")]
-    pub zoom: f32,
+    #[serde(default = "default_cols")]
+    pub cols: u32,
     #[serde(default)]
     pub mode: String,
     #[serde(default)]
@@ -34,15 +34,15 @@ pub struct Settings {
     pub presets: Vec<Preset>,
 }
 
-fn default_zoom() -> f32 {
-    34.0
+fn default_cols() -> u32 {
+    3
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
             files: Vec::new(),
-            zoom: 34.0,
+            cols: 3,
             mode: "Auto".into(),
             atlas: String::new(),
             presets: Vec::new(),

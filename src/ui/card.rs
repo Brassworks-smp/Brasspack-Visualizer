@@ -57,13 +57,29 @@ fn has_openable(item: &Item, bp: &BpIndex) -> bool {
     !resolve_nested(item, bp).is_empty()
 }
 
-pub(crate) fn card_height(m: &crate::store::EntryMeta, slot: f32) -> f32 {
+pub(crate) fn card_height(m: &crate::store::EntryMeta, slot: f32, width: f32) -> f32 {
     let header = 52.0_f32.max(24.0 + m.meta_len as f32 * 16.0);
     let actions = 34.0;
-    let upgrades = if m.has_upgrades() { 12.0 + slot } else { 0.0 };
+    let upgrades = if m.upgrades > 0 {
+        let urows = upgrade_rows(m.upgrades as usize, slot, width);
+        12.0 + urows as f32 * slot + (urows.saturating_sub(1)) as f32 * 8.0
+    } else {
+        0.0
+    };
     let rows = (m.rows as usize).max(1) as f32;
     24.0 + header + 8.0 + actions + 10.0 + upgrades + rows * slot + 14.0
 }
+
+pub(crate) fn upgrade_rows(count: usize, slot: f32, width: f32) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    let avail = width - 24.0 - UPGRADE_LABEL_W + 8.0;
+    let per_row = (avail / (slot + 8.0)).floor().max(1.0) as usize;
+    count.div_ceil(per_row)
+}
+
+const UPGRADE_LABEL_W: f32 = 70.0;
 
 pub(crate) fn card_width(slot: f32) -> f32 {
     (9.0 * slot + 24.0).max(320.0)
@@ -160,7 +176,7 @@ pub(crate) fn draw_card(
 
             if !entry.upgrades.is_empty() {
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new("Upgrades:").weak().size(12.0));
                     let mut hovered: Option<Rect> = None;
                     let mut matches: Vec<Rect> = Vec::new();

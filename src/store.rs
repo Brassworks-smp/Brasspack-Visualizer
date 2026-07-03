@@ -19,7 +19,6 @@ impl Load {
 
 const F_DUNGEON: u8 = 1;
 const F_HAS_ITEMS: u8 = 2;
-const F_HAS_UPGRADES: u8 = 4;
 
 #[derive(Default)]
 pub struct Interner {
@@ -51,6 +50,7 @@ pub struct EntryMeta {
     pub coords: Option<[i32; 3]>,
     pub flags: u8,
     pub rows: u16,
+    pub upgrades: u16,
     pub meta_len: u8,
     pub max_stack: i32,
     pub item_total: u32,
@@ -64,9 +64,6 @@ impl EntryMeta {
     }
     pub fn has_items(&self) -> bool {
         self.flags & F_HAS_ITEMS != 0
-    }
-    pub fn has_upgrades(&self) -> bool {
-        self.flags & F_HAS_UPGRADES != 0
     }
     pub fn coords64(&self) -> Option<(i64, i64, i64)> {
         self.coords.map(|[x, y, z]| (x as i64, y as i64, z as i64))
@@ -82,6 +79,7 @@ struct MetaOwned {
     coords: Option<[i32; 3]>,
     flags: u8,
     rows: u16,
+    upgrades: u16,
     meta_len: u8,
     max_stack: i32,
     item_total: u32,
@@ -98,9 +96,6 @@ impl MetaOwned {
         if !e.items.is_empty() {
             flags |= F_HAS_ITEMS;
         }
-        if !e.upgrades.is_empty() {
-            flags |= F_HAS_UPGRADES;
-        }
         MetaOwned {
             kind: e.kind,
             icon: e.header_icon.clone(),
@@ -110,6 +105,7 @@ impl MetaOwned {
             coords: e.coords.map(|(x, y, z)| [x as i32, y as i32, z as i32]),
             flags,
             rows: e.rows.min(u16::MAX as usize) as u16,
+            upgrades: e.upgrades.len().min(u16::MAX as usize) as u16,
             meta_len: e.meta.len().min(u8::MAX as usize) as u8,
             max_stack: e.max_stack.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
             item_total: e
@@ -136,6 +132,7 @@ impl MetaOwned {
             coords: self.coords,
             flags: self.flags,
             rows: self.rows,
+            upgrades: self.upgrades,
             meta_len: self.meta_len,
             max_stack: self.max_stack,
             item_total: self.item_total,
