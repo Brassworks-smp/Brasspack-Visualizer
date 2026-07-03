@@ -2,9 +2,6 @@
 use crate::model::{Entry, EntryKind, Item};
 use crate::store::{ci_contains, EntryMeta, Interner, TextSource};
 
-// Boolean text query: terms combined with AND / OR / NOT and parentheses.
-// Adjacent terms imply AND. Quotes group a phrase. Matching is substring,
-// case-insensitive (terms are lowercased at parse time).
 #[derive(Clone, Debug)]
 pub enum Expr {
     Term(String),
@@ -115,7 +112,6 @@ impl Parser {
         t
     }
 
-    // or := and ( OR and )*
     fn parse_or(&mut self) -> Option<Expr> {
         let mut left = self.parse_and()?;
         while matches!(self.peek(), Some(Tok::Or)) {
@@ -128,7 +124,6 @@ impl Parser {
         Some(left)
     }
 
-    // and := unary ( AND? unary )*   (adjacency implies AND)
     fn parse_and(&mut self) -> Option<Expr> {
         let mut left = self.parse_unary()?;
         loop {
@@ -214,8 +209,6 @@ impl EnchOp {
     }
 }
 
-// Per-item highlight test: does an individual item satisfy the active search
-// (text query and/or enchant filter), so it can be marked in the grid.
 pub struct Highlight {
     text: Option<Expr>,
     ench_name: Option<String>,
@@ -238,7 +231,6 @@ fn item_has_term(item: &Item, term: &str) -> bool {
 }
 
 impl Highlight {
-    // Does this item itself satisfy the active highlight criteria?
     pub fn item_matches(&self, item: &Item) -> bool {
         let text_ok = self
             .text
@@ -380,7 +372,6 @@ impl Filters {
         self.cat = quick.1;
     }
 
-    // Build the per-item highlight from the active text/enchant search, if any.
     pub fn highlight(&self) -> Option<Highlight> {
         let text = if matches!(self.cat, TextCat::Any | TextCat::Item) {
             parse_query(&self.text)
@@ -719,10 +710,8 @@ mod query_tests {
         assert!(!m("gold and (diamond or emerald)", "gold and iron"));
         assert!(m("\"diamond sword\"", "a diamond sword here"));
         assert!(!m("\"diamond sword\"", "a diamond pickaxe"));
-        // adjacency implies AND
         assert!(m("gold diamond", "gold and diamond"));
         assert!(!m("gold diamond", "only gold"));
-        // empty query matches everything
         assert!(m("   ", "whatever"));
     }
 }

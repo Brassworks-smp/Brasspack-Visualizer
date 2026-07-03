@@ -25,12 +25,10 @@ pub struct Item {
     pub gauge_text: Option<String>,
 }
 
-// Create Stuff & Additions tank capacities (mB) by tank size.
 pub const SMALL_CAP: i64 = 800;
 pub const MEDIUM_CAP: i64 = 1600;
 pub const LARGE_CAP: i64 = 3200;
 
-// Create backtank air capacity (default, without capacity enchant).
 pub const BACKTANK_MAX_AIR: i64 = 1800;
 
 use crate::color::rgb3;
@@ -81,10 +79,6 @@ impl Item {
         }
     }
 
-    // Populate `bar`/`outline` from parsed damage + Create custom-data values.
-    // `stock` is the Create Stuff & Additions `tagStock` fluid amount (mB);
-    // `air` is a Create backtank air value; `capacity_ench` is the level of the
-    // Create `capacity` enchantment which raises a backtank's max air.
     pub fn apply_gauges(&mut self, stock: Option<i64>, air: Option<i64>, capacity_ench: Option<i32>) {
         let id = self.id.to_lowercase();
 
@@ -116,8 +110,6 @@ impl Item {
             }
         }
 
-        // Vanilla durability bar. Dumps frequently omit the max_damage
-        // component for vanilla gear, so fall back to a known-durability table.
         if let Some(dmg) = self.damage {
             let max = self.max_damage.filter(|m| *m > 0).or_else(|| vanilla_max_damage(&id));
             if let Some(max) = max {
@@ -247,8 +239,6 @@ impl Entry {
     }
 }
 
-// Max durability of common vanilla tools/armor, inferred from the item id.
-// Used when the max_damage component isn't present in the dump.
 fn vanilla_max_damage(id: &str) -> Option<i32> {
     let n = id.rsplit(':').next().unwrap_or(id);
 
@@ -269,7 +259,6 @@ fn vanilla_max_damage(id: &str) -> Option<i32> {
         }
     }
 
-    // Armor: per-slot base durability × material factor.
     let armor = |slot_base: i32| -> Option<i32> {
         let mat = if n.starts_with("leather_") {
             5
@@ -317,17 +306,12 @@ fn vanilla_max_damage(id: &str) -> Option<i32> {
     })
 }
 
-// Vanilla item durability bar color: red (empty) -> yellow -> green (full).
-// The hue ramp is precomputed at compile time into a 256-entry table so the
-// per-item lookup is a plain index.
 const DURABILITY_LUT: [[u8; 3]; 256] = build_durability_lut();
 
 const fn build_durability_lut() -> [[u8; 3]; 256] {
     let mut lut = [[0u8; 3]; 256];
     let mut i = 0;
     while i < 256 {
-        // First half ramps green up (red -> yellow); second half ramps red
-        // down (yellow -> green). Equivalent to the old HSV math, integer-only.
         lut[i] = if i < 128 {
             [255, (i * 2) as u8, 0]
         } else {

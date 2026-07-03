@@ -402,7 +402,6 @@ fn find_json<'a>(v: &'a J, key: &str) -> Option<&'a J> {
     }
 }
 
-// Create toolbox: `create:toolbox_inventory -> items -> items -> {slot: item}`.
 fn extract_toolbox_json(v: &J, out: &mut Vec<Item>) {
     let Some(inv) = find_json(v, "create:toolbox_inventory") else { return };
     let inner = inv

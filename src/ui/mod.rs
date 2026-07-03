@@ -22,7 +22,6 @@ use crate::color::rgb;
 pub(crate) const ACCENT: Color32 = rgb(0x56ab60);
 pub(crate) const GOLD: Color32 = rgb(0xd49b24);
 const ERRC: Color32 = rgb(0xdc5a50);
-// Per-EntryKind title/badge colors (Container uses GOLD).
 pub(crate) const KIND_BACKPACK: Color32 = rgb(0xbe96e6);
 pub(crate) const KIND_PLAYER: Color32 = rgb(0x6ebef0);
 
@@ -159,9 +158,6 @@ impl App {
     pub fn new(ctx: egui::Context) -> Self {
         let (tx, rx) = channel();
 
-        // The font/glint assets are embedded in the binary, so the font loads
-        // instantly. The item-sprite atlas (brass_atlas.zip) is picked by the
-        // user at runtime.
         let (font, font_err) = match McFont::load() {
             Ok(f) => (Some(f), None),
             Err(e) => (None, Some(format!("Font load failed: {e}"))),
@@ -920,9 +916,6 @@ impl eframe::App for App {
                 })
                 .collect();
 
-            // Tile cards into as many columns as fit the available width at the
-            // current zoom, then masonry-pack them (each card into the shortest
-            // column) so variable-height cards stay compact.
             let cw = card_width(slot);
             let ncols = (((avail_w + spacing) / (cw + spacing)).floor() as usize)
                 .clamp(1, filtered.len().max(1));

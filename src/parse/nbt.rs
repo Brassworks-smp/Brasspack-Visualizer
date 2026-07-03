@@ -36,7 +36,6 @@ fn as_num(v: &Value) -> Option<i64> {
     })
 }
 
-// Recursively find the first numeric value stored under `key` (case-insensitive).
 pub(crate) fn find_num(v: &Value, key: &str) -> Option<i64> {
     match v {
         Value::Compound(m) => {
@@ -68,7 +67,7 @@ pub(crate) fn as_list(v: &Value) -> Option<&Vec<Value>> {
     }
 }
 
-fn int_array(v: &Value) -> Option<Vec<i32>> {
+pub(crate) fn int_array(v: &Value) -> Option<Vec<i32>> {
     match v {
         Value::IntArray(a) => Some(a.iter().copied().collect()),
         Value::List(l) => {
@@ -360,6 +359,10 @@ fn apply_components(item: &mut Item, components: &Value) {
         }
     }
 
+    if let Some(data) = map.get("create:minecart_contraption_data") {
+        crate::parse::contraption::extract(data, &mut item.contents);
+    }
+
     let stock = find_num(components, "tagStock").or_else(|| find_num(components, "tag_stock"));
     let air = find_num(components, "create:banktank_air").or_else(|| find_num(components, "Air"));
     let capacity_ench = item
@@ -370,15 +373,18 @@ fn apply_components(item: &mut Item, components: &Value) {
     item.apply_gauges(stock, air, capacity_ench);
 }
 
-// Create toolboxes store contents in `create:toolbox_inventory` as a nested
-// `items -> items -> { "<slot>": item }` compound. Collect them so the toolbox
-// becomes an openable nested container.
 pub(crate) fn extract_toolbox(inv: &Value, out: &mut Vec<Item>) {
     let inner = get(inv, "items")
         .and_then(|i| get(i, "items"))
         .or_else(|| get(inv, "items"));
-    match inner {
-        Some(Value::Compound(m)) => {
+    if let Some(inner) = inner {
+        push_items(inner, out);
+    }
+}
+
+pub(crate) fn push_items(v: &Value, out: &mut Vec<Item>) {
+    match v {
+        Value::Compound(m) => {
             for (slot, it) in m {
                 if get(it, "id").is_some() {
                     let s = slot.parse::<i32>().unwrap_or(out.len() as i32);
@@ -388,7 +394,7 @@ pub(crate) fn extract_toolbox(inv: &Value, out: &mut Vec<Item>) {
                 }
             }
         }
-        Some(Value::List(l)) => {
+        Value::List(l) => {
             for it in l {
                 if let Some(item) = item_from_nbt(it, out.len() as i32) {
                     out.push(item);
@@ -506,7 +512,6 @@ mod gauge_tests {
 
     #[test]
     fn filling_tank_bar() {
-        // Create Stuff & Additions stores fluid in custom_data.tagStock (Double).
         let item = cmp(vec![
             ("id", Value::String("create_sa:small_filling_tank".into())),
             ("count", Value::Int(1)),
@@ -577,7 +582,6 @@ mod gauge_tests {
         ]);
         let it = item_from_nbt(&item, 0).unwrap();
         let bar = it.bar.expect("air bar");
-        // capacity 1 -> max 3600, 900/3600 = 0.25
         assert!((bar.frac - 0.25).abs() < 1e-3, "900/3600 = 0.25, got {}", bar.frac);
     }
 
@@ -602,7 +606,6 @@ mod gauge_tests {
 
     #[test]
     fn toolbox_nested_contents() {
-        // create:toolbox_inventory -> items -> items -> { "<slot>": stack }
         let slot_map = cmp(vec![
             (
                 "0",

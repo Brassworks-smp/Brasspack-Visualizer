@@ -7,8 +7,6 @@ use std::sync::Arc;
 
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions};
 
-// Best-effort search for a brass_atlas.zip next to the program, used only by
-// the CLI helpers. The GUI has the user pick the file explicitly.
 pub fn find_zip() -> Option<PathBuf> {
     let mut candidates = vec![
         PathBuf::from("brass_atlas.zip"),

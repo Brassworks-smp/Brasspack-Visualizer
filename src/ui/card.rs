@@ -11,18 +11,14 @@ use crate::search::Highlight;
 
 type BpIndex = std::collections::HashMap<String, Vec<Item>>;
 
-// A drill-down request from a nested slot: (title, items, backpack uuid if any).
 pub(crate) type Drill = (String, Vec<Item>, Option<String>);
 
 const MATCH: Color32 = rgb(0xffce46);
 
-// Does this item or anything nested inside it satisfy the search?
 fn matches_deep(item: &Item, hl: &Highlight, bp: &BpIndex) -> bool {
     hl.item_matches(item) || resolve_nested(item, bp).iter().any(|c| matches_deep(c, hl, bp))
 }
 
-// 0 = no match, 1 = a nested descendant matches (container marker),
-// 2 = the item itself matches (direct marker).
 fn match_level(item: &Item, hl: Option<&Highlight>, bp: &BpIndex) -> u8 {
     let Some(hl) = hl else { return 0 };
     if hl.item_matches(item) {
@@ -34,13 +30,9 @@ fn match_level(item: &Item, hl: Option<&Highlight>, bp: &BpIndex) -> u8 {
     }
 }
 
-// Gold marker for a slot that matched the search: a corner tab plus an outline.
-// `strong` marks the item itself; otherwise it marks a container whose nested
-// contents matched (drawn a touch dimmer).
 fn paint_match(ui: &egui::Ui, rect: Rect, strong: bool) {
     let painter = ui.painter();
     let col = if strong { MATCH } else { MATCH.gamma_multiply(0.65) };
-    // top-right corner tab (the nested badge lives top-left, count bottom-right)
     let s = (rect.width() * 0.3).clamp(6.0, 11.0);
     let tr = Pos2::new(rect.max.x - 1.5, rect.min.y + 1.5);
     painter.add(egui::Shape::convex_polygon(
@@ -70,12 +62,9 @@ pub(crate) fn card_height(m: &crate::store::EntryMeta, slot: f32) -> f32 {
     let actions = 34.0;
     let upgrades = if m.has_upgrades() { 12.0 + slot } else { 0.0 };
     let rows = (m.rows as usize).max(1) as f32;
-    // frame margins (12*2) + header + gap + actions + gap + upgrades + gap + grid + pad
     24.0 + header + 8.0 + actions + 10.0 + upgrades + rows * slot + 14.0
 }
 
-// Fixed on-screen width of a card at the given zoom. Wide enough that the
-// 9-column grid and the compact action toolbar never need to wrap.
 pub(crate) fn card_width(slot: f32) -> f32 {
     (9.0 * slot + 24.0).max(320.0)
 }
@@ -101,8 +90,6 @@ pub(crate) fn draw_card(
         .rounding(Rounding::same(10.0))
         .inner_margin(egui::Margin::same(12.0))
         .show(ui, |ui| {
-            // Fill the full column width so cards sit flush with no gaps between
-            // them, rather than shrinking to the 9-slot grid's content width.
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 let (rect, hdr_resp) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
@@ -204,7 +191,6 @@ pub(crate) fn draw_card(
             let cols = entry.cols.max(1);
             let rows = entry.rows.max(1);
             let grid_w = cols as f32 * slot;
-            // Center the fixed-size slot grid in the (wider) card.
             let indent = ((ui.available_width() - grid_w) * 0.5).max(0.0);
             let (row_rect, _) = ui.allocate_exact_size(
                 Vec2::new((ui.available_width()).max(grid_w), rows as f32 * slot),
@@ -267,9 +253,6 @@ pub(crate) fn draw_card(
         });
 }
 
-// Draw a filled slot: background, item icon, durability/tank bar, special
-// outline, and stack count. The hover ring is drawn separately, on top of the
-// whole grid, so it never gets clipped by a neighbouring slot.
 #[allow(clippy::too_many_arguments)]
 fn paint_slot(
     ui: &egui::Ui,
@@ -326,13 +309,10 @@ fn paint_slot_bg(ui: &egui::Ui, rect: Rect, filled: bool) {
 }
 
 fn paint_hover_ring(ui: &egui::Ui, rect: Rect) {
-    // Drawn on top of the whole grid and inset so it stays fully inside the
-    // slot instead of clipping into neighbouring cells.
     ui.painter()
         .rect_stroke(rect.shrink(1.5), Rounding::same(3.0), Stroke::new(2.0, ACCENT));
 }
 
-// Minecraft-style durability / tank fill bar along the bottom of a slot.
 fn paint_bar(ui: &egui::Ui, rect: Rect, bar: &Bar) {
     let m = rect.width() * 0.12;
     let h = (rect.height() * 0.055).clamp(2.0, 3.0);
@@ -340,7 +320,6 @@ fn paint_bar(ui: &egui::Ui, rect: Rect, bar: &Bar) {
     let left = rect.left() + m;
     let full = rect.width() - 2.0 * m;
     let painter = ui.painter();
-    // dark backing (with a 1px shadow row beneath like vanilla)
     painter.rect_filled(
         Rect::from_min_size(Pos2::new(left, y), Vec2::new(full, h)),
         Rounding::ZERO,
@@ -355,8 +334,6 @@ fn paint_bar(ui: &egui::Ui, rect: Rect, bar: &Bar) {
     );
 }
 
-// Special slot outline (e.g. white for Create backtanks). Inset so it reads as
-// a highlight without bleeding into adjacent slots.
 fn paint_outline(ui: &egui::Ui, rect: Rect, color: Color32) {
     ui.painter()
         .rect_stroke(rect.shrink(1.5), Rounding::same(3.0), Stroke::new(2.0, color));
@@ -389,8 +366,6 @@ fn paint_texture(ui: &egui::Ui, atlas: &mut Atlas, rect: Rect, id: &str) -> bool
     }
 }
 
-// Placeholder for an item whose sprite isn't in the atlas, so it reads as a
-// missing texture rather than a blank slot.
 fn paint_missing(ui: &egui::Ui, rect: Rect) {
     let painter = ui.painter();
     painter.rect_filled(rect, Rounding::same(2.0), rgb(0x302c3a));
@@ -413,10 +388,6 @@ fn paint_icon(
 ) -> bool {
     if let Some(key) = item.head_key() {
         if let Some(tex) = profiles.head(ui.ctx(), key) {
-            // A player head in a Minecraft slot renders as a small 8px skull,
-            // noticeably smaller than a full item sprite. The head3d texture
-            // already carries a margin, so drawing it slightly inset from the
-            // icon rect matches the in-game footprint.
             ui.painter().image(tex.id(), rect.shrink(rect.width() * 0.06), full_uv(), Color32::WHITE);
             return false;
         }

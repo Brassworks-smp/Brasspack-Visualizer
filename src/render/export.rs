@@ -185,7 +185,6 @@ fn draw_rect_px(canvas: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32, color: [
 }
 
 fn draw_missing(canvas: &mut RgbaImage, x: u32, y: u32, size: u32) {
-    // magenta/black checker, the classic missing-texture look
     let (cw, ch) = canvas.dimensions();
     let cell = (size / 4).max(1);
     for dy in 0..size {
