@@ -6,11 +6,72 @@ use super::{Action, ACCENT, GOLD};
 use crate::model::{format_count, prettify_id, Bar, Entry, EntryKind, Item};
 use crate::profiles::Profiles;
 use crate::render::atlas::Atlas;
+use crate::search::Expr;
+use crate::store::ci_contains;
 
 type BpIndex = std::collections::HashMap<String, Vec<Item>>;
 
 // A drill-down request from a nested slot: (title, items, backpack uuid if any).
 pub(crate) type Drill = (String, Vec<Item>, Option<String>);
+
+const MATCH: Color32 = Color32::from_rgb(255, 214, 74);
+
+fn item_has_term(item: &Item, term: &str) -> bool {
+    ci_contains(item.id.as_bytes(), term)
+        || item
+            .custom_name
+            .as_deref()
+            .is_some_and(|n| ci_contains(n.as_bytes(), term))
+        || item.lore.iter().any(|l| ci_contains(l.as_bytes(), term))
+        || item.enchants.iter().any(|(e, _)| ci_contains(e.as_bytes(), term))
+        || item
+            .head_ref
+            .as_deref()
+            .is_some_and(|r| ci_contains(r.as_bytes(), term))
+}
+
+// Does this item itself satisfy the query (ignoring nested contents)?
+fn matches_self(item: &Item, expr: &Expr) -> bool {
+    expr.eval(&|t| item_has_term(item, t))
+}
+
+// Does this item or anything nested inside it satisfy the query?
+fn matches_deep(item: &Item, expr: &Expr, bp: &BpIndex) -> bool {
+    matches_self(item, expr) || resolve_nested(item, bp).iter().any(|c| matches_deep(c, expr, bp))
+}
+
+// 0 = no match, 1 = a nested descendant matches (container highlight),
+// 2 = the item itself matches (direct highlight).
+fn match_level(item: &Item, hl: Option<&Expr>, bp: &BpIndex) -> u8 {
+    let Some(expr) = hl else { return 0 };
+    if matches_self(item, expr) {
+        2
+    } else if resolve_nested(item, bp).iter().any(|c| matches_deep(c, expr, bp)) {
+        1
+    } else {
+        0
+    }
+}
+
+// Highlight a slot that matched the search. `strong` marks the item itself;
+// otherwise it marks a container whose nested contents matched.
+fn paint_match(ui: &egui::Ui, rect: Rect, strong: bool) {
+    let painter = ui.painter();
+    if strong {
+        painter.rect_filled(
+            rect.shrink(1.5),
+            Rounding::same(3.0),
+            Color32::from_rgba_unmultiplied(255, 214, 74, 46),
+        );
+        painter.rect_stroke(rect.shrink(1.5), Rounding::same(3.0), Stroke::new(2.0, MATCH));
+    } else {
+        painter.rect_stroke(
+            rect.shrink(1.5),
+            Rounding::same(3.0),
+            Stroke::new(1.5, MATCH.gamma_multiply(0.6)),
+        );
+    }
+}
 
 fn resolve_nested<'a>(item: &'a Item, bp: &'a BpIndex) -> &'a [Item] {
     if !item.contents.is_empty() {
@@ -51,6 +112,7 @@ pub(crate) fn draw_card(
     slot: f32,
     gframe: usize,
     bp: &BpIndex,
+    hl: Option<&Expr>,
     profiles: &mut Profiles,
     actions: &mut Vec<Action>,
     animating: &mut bool,
@@ -133,15 +195,22 @@ pub(crate) fn draw_card(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Upgrades:").weak().size(12.0));
                     let mut hovered: Option<Rect> = None;
+                    let mut matches: Vec<Rect> = Vec::new();
                     for (idx, up) in entry.upgrades.iter().enumerate() {
                         let (rect, _) = ui.allocate_exact_size(Vec2::splat(slot), Sense::hover());
                         paint_slot(ui, atlas, profiles, rect, up, gframe, false, animating);
+                        if hl.is_some_and(|e| matches_self(up, e)) {
+                            matches.push(rect);
+                        }
                         let resp = ui.interact(rect, Id::new(("up", si, ei, idx)), Sense::hover());
                         if resp.hovered() {
                             hovered = Some(rect);
                         }
                         let up = up.clone();
-                        resp.on_hover_ui(|ui| item_tooltip(ui, atlas, &up, gframe, bp, profiles));
+                        resp.on_hover_ui(|ui| item_tooltip(ui, atlas, &up, gframe, bp, hl, profiles));
+                    }
+                    for r in matches {
+                        paint_match(ui, r, true);
                     }
                     if let Some(r) = hovered {
                         paint_hover_ring(ui, r);
@@ -163,6 +232,7 @@ pub(crate) fn draw_card(
                 by_slot.insert(it.slot, it);
             }
             let mut hovered: Option<Rect> = None;
+            let mut matches: Vec<(Rect, bool)> = Vec::new();
             for r in 0..rows {
                 for c in 0..cols {
                     let min = grid_rect.min + Vec2::new(c as f32 * slot, r as f32 * slot);
@@ -173,6 +243,11 @@ pub(crate) fn draw_card(
                         paint_slot(ui, atlas, profiles, srect, item, gframe, true, animating);
                         if openable {
                             paint_nested_badge(ui, srect);
+                        }
+                        match match_level(item, hl, bp) {
+                            2 => matches.push((srect, true)),
+                            1 => matches.push((srect, false)),
+                            _ => {}
                         }
                         let sense = if openable { Sense::click() } else { Sense::hover() };
                         let resp = ui.interact(srect, Id::new(("slot", si, ei, sidx)), sense);
@@ -191,11 +266,14 @@ pub(crate) fn draw_card(
                             ));
                         }
                         let item = (*item).clone();
-                        resp.on_hover_ui(|ui| item_tooltip(ui, atlas, &item, gframe, bp, profiles));
+                        resp.on_hover_ui(|ui| item_tooltip(ui, atlas, &item, gframe, bp, hl, profiles));
                     } else {
                         paint_slot_bg(ui, srect, true);
                     }
                 }
+            }
+            for (r, strong) in matches {
+                paint_match(ui, r, strong);
             }
             if let Some(r) = hovered {
                 paint_hover_ring(ui, r);
@@ -397,6 +475,7 @@ fn item_tooltip(
     item: &Item,
     gframe: usize,
     bp: &BpIndex,
+    hl: Option<&Expr>,
     profiles: &mut Profiles,
 ) {
     ui.set_max_width(340.0);
@@ -486,6 +565,11 @@ fn item_tooltip(
             if has_openable(c, bp) {
                 paint_nested_badge(ui, srect);
             }
+            match match_level(c, hl, bp) {
+                2 => paint_match(ui, srect, true),
+                1 => paint_match(ui, srect, false),
+                _ => {}
+            }
             paint_count(ui, srect, c.count);
         }
         for c in contents.iter().take(12) {
@@ -522,6 +606,7 @@ pub(crate) fn nested_grid(
     atlas: &mut Atlas,
     items: &[Item],
     bp: &BpIndex,
+    hl: Option<&Expr>,
     profiles: &mut Profiles,
     gframe: usize,
     slot: f32,
@@ -535,6 +620,7 @@ pub(crate) fn nested_grid(
     );
     let mut drill = None;
     let mut hovered: Option<Rect> = None;
+    let mut matches: Vec<(Rect, bool)> = Vec::new();
     for (i, it) in items.iter().enumerate() {
         let min = rect.min + Vec2::new((i % cols) as f32 * slot, (i / cols) as f32 * slot);
         let srect = Rect::from_min_size(min, Vec2::splat(slot));
@@ -542,6 +628,11 @@ pub(crate) fn nested_grid(
         paint_slot(ui, atlas, profiles, srect, it, gframe, true, animating);
         if openable {
             paint_nested_badge(ui, srect);
+        }
+        match match_level(it, hl, bp) {
+            2 => matches.push((srect, true)),
+            1 => matches.push((srect, false)),
+            _ => {}
         }
         let sense = if openable { Sense::click() } else { Sense::hover() };
         let resp = ui.interact(srect, Id::new(("nested-slot", i)), sense);
@@ -559,7 +650,10 @@ pub(crate) fn nested_grid(
             ));
         }
         let it2 = it.clone();
-        resp.on_hover_ui(|ui| item_tooltip(ui, atlas, &it2, gframe, bp, profiles));
+        resp.on_hover_ui(|ui| item_tooltip(ui, atlas, &it2, gframe, bp, hl, profiles));
+    }
+    for (r, strong) in matches {
+        paint_match(ui, r, strong);
     }
     if let Some(r) = hovered {
         paint_hover_ring(ui, r);

@@ -13,7 +13,7 @@ use crate::render::atlas::{Atlas, GLINT_FRAMES};
 use crate::render::export::McFont;
 use crate::model::{Entry, EntryKind, Item};
 use crate::profiles::{Fetched, Profiles};
-use crate::search::{DungeonFilter, EnchOp, Filters, TextCat};
+use crate::search::{parse_query, DungeonFilter, EnchOp, Expr, Filters, TextCat};
 use crate::settings::{SavedFile, Settings};
 use crate::store::Store;
 
@@ -113,6 +113,7 @@ pub struct App {
     bp_meta: std::collections::HashMap<String, BpInfo>,
     popup: Vec<PopupLevel>,
     search_help: bool,
+    highlight: Option<Expr>,
     profiles: Profiles,
     next_id: u64,
 }
@@ -187,6 +188,7 @@ impl App {
             bp_meta: std::collections::HashMap::new(),
             popup: Vec::new(),
             search_help: false,
+            highlight: None,
             profiles: Profiles::new(),
             next_id: 0,
         };
@@ -231,6 +233,11 @@ impl App {
     }
 
     fn run_search(&mut self) {
+        // Highlight matching items only when the text query targets item text.
+        self.highlight = match self.filters.cat {
+            TextCat::Any | TextCat::Item => parse_query(&self.filters.text),
+            _ => None,
+        };
         let c = self.filters.compile();
         let mut out = Vec::new();
         let mut total = 0usize;
@@ -660,7 +667,7 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.heading(egui::RichText::new("Files").color(ACCENT));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("＋").on_hover_text("Add files").clicked() {
+                        if ui.button("+ Add").on_hover_text("Add files").clicked() {
                             add_clicked = true;
                         }
                     });
@@ -785,6 +792,16 @@ impl eframe::App for App {
             if self.filtered.is_empty() {
                 if self.sources.iter().any(|s| s.loading) {
                     center_spinner(ui, "Parsing…");
+                } else if !self.filters.text.trim().is_empty() {
+                    center_message(
+                        ui,
+                        "?",
+                        &format!(
+                            "No matches for \"{}\" - try a broader term, OR, or clear filters.",
+                            self.filters.text.trim()
+                        ),
+                        Color32::from_gray(150),
+                    );
                 } else {
                     center_message(
                         ui,
@@ -802,6 +819,7 @@ impl eframe::App for App {
             let sources = &self.sources;
             let filtered = &self.filtered;
             let bp = &self.bp_index;
+            let hl = self.highlight.as_ref();
             let profiles = &mut self.profiles;
             let spacing = 12.0;
             let heights: Vec<f32> = filtered
@@ -869,6 +887,7 @@ impl eframe::App for App {
                                     slot,
                                     gframe,
                                     bp,
+                                    hl,
                                     profiles,
                                     &mut actions,
                                     &mut animating,
@@ -965,6 +984,7 @@ impl eframe::App for App {
         if let (false, Some(atlas)) = (self.popup.is_empty(), self.atlas.as_mut()) {
             let slot = self.slot;
             let bp = &self.bp_index;
+            let hl = self.highlight.as_ref();
             let profiles = &mut self.profiles;
             let depth = self.popup.len();
             let level = self.popup.last().unwrap();
@@ -1026,7 +1046,7 @@ impl eframe::App for App {
                     ui.separator();
                     egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
                         if let Some(d) =
-                            nested_grid(ui, atlas, items, bp, profiles, gframe, slot, &mut animating)
+                            nested_grid(ui, atlas, items, bp, hl, profiles, gframe, slot, &mut animating)
                         {
                             drill = Some(d);
                         }
