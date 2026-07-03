@@ -2,6 +2,7 @@
 
 /server_container_dump.json
 /server_player_dump.json
+/brass_atlas.zip
 *.dat
 *.nbt
 

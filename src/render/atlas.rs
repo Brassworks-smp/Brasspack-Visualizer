@@ -1,24 +1,14 @@
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::{Cursor, Read};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions};
-use serde::Deserialize;
-
-#[derive(Deserialize, Clone, Copy)]
-struct Rect {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
-#[derive(Deserialize)]
-struct AtlasMap {
-    sprites: HashMap<String, Rect>,
-}
 
 pub fn assets_dir() -> String {
-    let mut candidates = vec![std::path::PathBuf::from("assets")];
+    let mut candidates = vec![PathBuf::from("assets")];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("assets"));
@@ -26,11 +16,25 @@ pub fn assets_dir() -> String {
         }
     }
     for c in &candidates {
-        if c.join("atlas_map.json").exists() {
+        if c.join("font.json").exists() {
             return c.to_string_lossy().into_owned();
         }
     }
     "assets".to_string()
+}
+
+fn find_zip(assets_dir: &str) -> Option<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from(assets_dir).join("brass_atlas.zip"),
+        PathBuf::from("brass_atlas.zip"),
+    ];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("brass_atlas.zip"));
+            candidates.push(dir.join("../Resources/brass_atlas.zip"));
+        }
+    }
+    candidates.into_iter().find(|p| p.exists())
 }
 
 pub const GLINT_FRAMES: usize = 24;
@@ -39,9 +43,22 @@ const GLINT_C1: [f32; 3] = [122.0, 92.0, 255.0];
 const GLINT_C2: [f32; 3] = [169.0, 113.0, 255.0];
 const GLINT_STRENGTH: f32 = 0.5;
 
+#[derive(Clone, Copy)]
+struct SpriteMeta {
+    #[allow(dead_code)]
+    w: u32,
+    #[allow(dead_code)]
+    h: u32,
+    #[allow(dead_code)]
+    is3d: bool,
+}
+
+type Zip = zip::ZipArchive<Cursor<Vec<u8>>>;
+
 pub struct Atlas {
-    map: HashMap<String, Rect>,
-    image: image::RgbaImage,
+    manifest: HashMap<String, SpriteMeta>,
+    zip: RefCell<Zip>,
+    sprites: RefCell<HashMap<String, Option<Arc<image::RgbaImage>>>>,
     cache: HashMap<String, Option<TextureHandle>>,
     glint_src: Option<image::RgbaImage>,
     glint_cache: HashMap<String, Option<Vec<TextureHandle>>>,
@@ -49,48 +66,45 @@ pub struct Atlas {
 
 impl Atlas {
     pub fn load(assets_dir: &str) -> Result<Atlas, String> {
-        let json = std::fs::read_to_string(format!("{assets_dir}/atlas_map.json"))
-            .map_err(|e| format!("atlas_map.json: {e}"))?;
-        let map: AtlasMap = serde_json::from_str(&json).map_err(|e| format!("atlas_map: {e}"))?;
+        let zip_path = find_zip(assets_dir).ok_or("brass_atlas.zip not found")?;
+        let bytes = std::fs::read(&zip_path).map_err(|e| format!("brass_atlas.zip: {e}"))?;
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("zip open: {e}"))?;
 
-        let mut reader = image::ImageReader::open(format!("{assets_dir}/item_atlas.png"))
-            .map_err(|e| format!("item_atlas.png: {e}"))?;
-        reader.no_limits();
-        let img = reader
-            .decode()
-            .map_err(|e| format!("item_atlas.png decode: {e}"))?
-            .to_rgba8();
+        let manifest = {
+            let mut f = zip.by_name("atlas.nbt").map_err(|e| format!("atlas.nbt: {e}"))?;
+            let mut raw = Vec::new();
+            f.read_to_end(&mut raw).map_err(|e| format!("atlas.nbt read: {e}"))?;
+            parse_manifest(&raw)?
+        };
 
         let glint_src = image::open(format!("{assets_dir}/enchanted_glint_item.png"))
             .ok()
             .map(|i| i.to_rgba8());
 
         Ok(Atlas {
-            map: map.sprites,
-            image: img,
+            manifest,
+            zip: RefCell::new(zip),
+            sprites: RefCell::new(HashMap::new()),
             cache: HashMap::new(),
             glint_src,
             glint_cache: HashMap::new(),
         })
     }
 
-    fn crop_sprite(&self, r: Rect) -> image::RgbaImage {
-        image::imageops::crop_imm(&self.image, r.x, r.y, r.width, r.height).to_image()
-    }
-
-    fn resolve(&self, id: &str) -> Option<Rect> {
+    fn resolve(&self, id: &str) -> Option<String> {
         let clean = id.trim().trim_matches('"').to_lowercase();
-        if let Some(r) = self.map.get(&clean) {
-            return Some(*r);
+        if self.manifest.contains_key(&clean) {
+            return Some(clean);
         }
         if !clean.contains(':') {
-            if let Some(r) = self.map.get(&format!("minecraft:{clean}")) {
-                return Some(*r);
+            let k = format!("minecraft:{clean}");
+            if self.manifest.contains_key(&k) {
+                return Some(k);
             }
         }
         if let Some(stripped) = clean.strip_prefix("minecraft:") {
-            if let Some(r) = self.map.get(stripped) {
-                return Some(*r);
+            if self.manifest.contains_key(stripped) {
+                return Some(stripped.to_string());
             }
         }
         for (needle, key) in [
@@ -100,12 +114,35 @@ impl Atlas {
             ("backpack", "sophisticatedbackpacks:backpack"),
         ] {
             if clean.contains(needle) {
-                if let Some(r) = self.map.get(key).or_else(|| self.map.get(&format!("minecraft:{key}"))) {
-                    return Some(*r);
+                for cand in [key.to_string(), format!("minecraft:{key}")] {
+                    if self.manifest.contains_key(&cand) {
+                        return Some(cand);
+                    }
                 }
             }
         }
         None
+    }
+
+    fn sprite(&self, id: &str) -> Option<Arc<image::RgbaImage>> {
+        let key = self.resolve(id)?;
+        if let Some(cached) = self.sprites.borrow().get(&key) {
+            return cached.clone();
+        }
+        let img = self.load_sprite(&key);
+        self.sprites.borrow_mut().insert(key, img.clone());
+        img
+    }
+
+    fn load_sprite(&self, key: &str) -> Option<Arc<image::RgbaImage>> {
+        let name = format!("sprites/{}.png", key.replacen(':', "_", 1).replace('/', "_"));
+        let mut zip = self.zip.borrow_mut();
+        let mut file = zip.by_name(&name).ok()?;
+        let mut buf = Vec::with_capacity(file.size() as usize);
+        file.read_to_end(&mut buf).ok()?;
+        drop(file);
+        let img = image::load_from_memory(&buf).ok()?.to_rgba8();
+        Some(Arc::new(img))
     }
 
     pub fn texture(&mut self, ctx: &egui::Context, id: &str) -> Option<TextureHandle> {
@@ -113,12 +150,10 @@ impl Atlas {
         if let Some(cached) = self.cache.get(&key) {
             return cached.clone();
         }
-        let tex = self.resolve(&key).map(|r| {
-            let cropped =
-                image::imageops::crop_imm(&self.image, r.x, r.y, r.width, r.height).to_image();
+        let tex = self.sprite(&key).map(|img| {
             let color = ColorImage::from_rgba_unmultiplied(
-                [r.width as usize, r.height as usize],
-                cropped.as_raw(),
+                [img.width() as usize, img.height() as usize],
+                img.as_raw(),
             );
             ctx.load_texture(format!("item::{key}"), color, TextureOptions::NEAREST)
         });
@@ -149,9 +184,9 @@ impl Atlas {
 
     fn build_glint_frames(&self, ctx: &egui::Context, key: &str) -> Option<Vec<TextureHandle>> {
         let glint = self.glint_src.as_ref()?;
-        let r = self.resolve(key)?;
+        let base = self.sprite(key)?;
         let item = image::imageops::resize(
-            &self.crop_sprite(r),
+            base.as_ref(),
             GLINT_SIZE,
             GLINT_SIZE,
             image::imageops::FilterType::Nearest,
@@ -174,9 +209,9 @@ impl Atlas {
 
     pub fn glint_overlay(&self, id: &str, size: u32) -> Option<image::RgbaImage> {
         let glint = self.glint_src.as_ref()?;
-        let r = self.resolve(&id.trim().trim_matches('"').to_lowercase())?;
+        let base = self.sprite(id)?;
         let item = image::imageops::resize(
-            &self.crop_sprite(r),
+            base.as_ref(),
             size,
             size,
             image::imageops::FilterType::Nearest,
@@ -190,15 +225,67 @@ impl Atlas {
     }
 
     pub fn sprite_scaled(&self, id: &str, size: u32) -> Option<image::RgbaImage> {
-        let r = self.resolve(&id.trim().trim_matches('"').to_lowercase())?;
-        let cropped = image::imageops::crop_imm(&self.image, r.x, r.y, r.width, r.height).to_image();
+        let base = self.sprite(id)?;
         Some(image::imageops::resize(
-            &cropped,
+            base.as_ref(),
             size,
             size,
             image::imageops::FilterType::Nearest,
         ))
     }
+}
+
+fn parse_manifest(raw: &[u8]) -> Result<HashMap<String, SpriteMeta>, String> {
+    let bytes = decompress(raw);
+    let root: fastnbt::Value =
+        fastnbt::from_bytes(&bytes).map_err(|e| format!("manifest nbt: {e}"))?;
+    let sprites = match &root {
+        fastnbt::Value::Compound(m) => m.get("sprites"),
+        _ => None,
+    }
+    .ok_or("manifest missing 'sprites'")?;
+    let map = match sprites {
+        fastnbt::Value::Compound(m) => m,
+        _ => return Err("manifest 'sprites' not a compound".into()),
+    };
+    let mut out = HashMap::with_capacity(map.len());
+    for (id, v) in map {
+        if let fastnbt::Value::Compound(e) = v {
+            let w = nbt_u32(e.get("w")).unwrap_or(16);
+            let h = nbt_u32(e.get("h")).unwrap_or(w);
+            let is3d = matches!(e.get("d"), Some(fastnbt::Value::Byte(b)) if *b != 0);
+            out.insert(id.clone(), SpriteMeta { w, h, is3d });
+        }
+    }
+    Ok(out)
+}
+
+fn nbt_u32(v: Option<&fastnbt::Value>) -> Option<u32> {
+    match v? {
+        fastnbt::Value::Byte(x) => Some(*x as u32),
+        fastnbt::Value::Short(x) => Some(*x as u32),
+        fastnbt::Value::Int(x) => Some(*x as u32),
+        fastnbt::Value::Long(x) => Some(*x as u32),
+        _ => None,
+    }
+}
+
+fn decompress(raw: &[u8]) -> Vec<u8> {
+    if raw.first() == Some(&0x1f) {
+        let mut d = flate2::read::MultiGzDecoder::new(raw);
+        let mut out = Vec::new();
+        if d.read_to_end(&mut out).is_ok() {
+            return out;
+        }
+    }
+    if raw.first() == Some(&0x78) {
+        let mut d = flate2::read::ZlibDecoder::new(raw);
+        let mut out = Vec::new();
+        if d.read_to_end(&mut out).is_ok() {
+            return out;
+        }
+    }
+    raw.to_vec()
 }
 
 fn glint_added(item: &image::RgbaImage, glint: &image::RgbaImage, prog: f32) -> Vec<[u8; 3]> {

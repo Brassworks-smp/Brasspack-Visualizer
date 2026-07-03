@@ -23,6 +23,7 @@ rayon = "1"
 ureq = "2"
 base64 = "0.22"
 memmap2 = "0.9"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3
