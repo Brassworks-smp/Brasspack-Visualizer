@@ -5,7 +5,7 @@ use std::io::Read;
 use fastnbt::Value;
 use rayon::prelude::*;
 
-use crate::model::{format_short_date, CopyAction, Entry, EntryKind, Item};
+use crate::model::{format_short_date, Entry, EntryKind, Item};
 
 pub(crate) fn comp(v: &Value) -> Option<&HashMap<String, Value>> {
     match v {
@@ -156,9 +156,7 @@ fn build_owner_index(payload: &Value) -> HashMap<String, Owner> {
         .and_then(as_list)
         .unwrap_or(&empty);
     for rec in log {
-        let uuid = get(rec, "backpackUuid")
-            .or_else(|| get(rec, "uuid"))
-            .and_then(int_array)
+        let uuid = nbt_get!(rec, "backpackUuid" | "uuid" => int_array)
             .and_then(|a| uuid_from_ints(&a));
         if let Some(uuid) = uuid {
             idx.insert(
@@ -202,9 +200,7 @@ pub(crate) fn uuid_from_ints(ints: &[i32]) -> Option<String> {
 }
 
 fn parse_backpack(bc: &Value, owners: &HashMap<String, Owner>) -> Option<Entry> {
-    let uuid = get(bc, "uuid")
-        .or_else(|| get(bc, "backpackUuid"))
-        .and_then(int_array)
+    let uuid = nbt_get!(bc, "uuid" | "backpackUuid" => int_array)
         .and_then(|a| uuid_from_ints(&a))?;
 
     let contents = get(bc, "contents");
@@ -230,22 +226,19 @@ fn parse_backpack(bc: &Value, owners: &HashMap<String, Owner>) -> Option<Entry> 
         owner.player.clone()
     };
 
-    let mut meta = vec![
-        ("Owner".into(), player.clone()),
-        ("Last access".into(), format_short_date(owner.access)),
-        ("UUID".into(), uuid.clone()),
+    let mut meta = meta![
+        "Owner" => player.clone(),
+        "Last access" => format_short_date(owner.access),
+        "UUID" => uuid.clone(),
     ];
     if !owner.name.is_empty() {
         meta.insert(1, ("Backpack".into(), owner.name.clone()));
     }
 
-    let copies = vec![
-        CopyAction { label: "Copy Player".into(), value: player.clone() },
-        CopyAction { label: "Copy UUID".into(), value: uuid.clone() },
-        CopyAction {
-            label: "Copy Registry".into(),
-            value: header_icon.clone(),
-        },
+    let copies = copies![
+        "Copy Player" => player.clone(),
+        "Copy UUID" => uuid.clone(),
+        "Copy Registry" => header_icon.clone(),
     ];
 
     let title = format!("{} - {}", player, crate::model::prettify_id(&header_icon));
@@ -258,17 +251,9 @@ fn parse_backpack(bc: &Value, owners: &HashMap<String, Owner>) -> Option<Entry> 
         copies,
         items,
         upgrades,
-        cols: 9,
-        rows: 0,
-        is_dungeon: false,
-        dimension: String::new(),
         owner: player.to_lowercase(),
         uuid: uuid.to_lowercase(),
-        coords: None,
-        search_blob: String::new(),
-        nbt_blob: String::new(),
-        max_stack: 0,
-        all_enchants: Vec::new(),
+        ..Default::default()
     };
     let extra = format!("{} {} {}", player, uuid, owner.name);
     entry.finalize(&extra);
@@ -292,13 +277,8 @@ pub(crate) fn item_from_nbt(v: &Value, default_slot: i32) -> Option<Item> {
     if id.is_empty() || id.contains("air") {
         return None;
     }
-    let count = get(v, "count")
-        .or_else(|| get(v, "Count"))
-        .and_then(as_i64)
-        .unwrap_or(1);
-    let slot = get(v, "Slot")
-        .or_else(|| get(v, "slot"))
-        .and_then(as_i64)
+    let count = nbt_get!(v, "count" | "Count" => as_i64).unwrap_or(1);
+    let slot = nbt_get!(v, "Slot" | "slot" => as_i64)
         .map(|x| x as i32)
         .unwrap_or(default_slot);
 

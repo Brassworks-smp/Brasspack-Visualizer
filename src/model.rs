@@ -33,9 +33,11 @@ pub const LARGE_CAP: i64 = 3200;
 // Create backtank air capacity (default, without capacity enchant).
 pub const BACKTANK_MAX_AIR: i64 = 1800;
 
-const FILLING_COLOR: [u8; 3] = [0x79, 0x97, 0xd9];
-const FUELING_COLOR: [u8; 3] = [0xff, 0xa5, 0x65];
-const BACKTANK_COLOR: [u8; 3] = [0xff, 0xff, 0xff];
+use crate::color::rgb3;
+
+const FILLING_COLOR: [u8; 3] = rgb3(0x7997d9);
+const FUELING_COLOR: [u8; 3] = rgb3(0xffa565);
+const BACKTANK_COLOR: [u8; 3] = rgb3(0xffffff);
 
 pub const NESTED_KEYS: &[&str] = &[
     "minecraft:container",
@@ -180,9 +182,10 @@ pub fn skin_url_from_textures_value(b64: &str) -> Option<String> {
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum EntryKind {
     Backpack,
+    #[default]
     Container,
     Player,
 }
@@ -193,7 +196,7 @@ pub struct CopyAction {
     pub value: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Entry {
     pub kind: EntryKind,
     pub title: String,
@@ -314,17 +317,29 @@ fn vanilla_max_damage(id: &str) -> Option<i32> {
     })
 }
 
-// Vanilla item durability bar color: green (full) through red (empty).
+// Vanilla item durability bar color: red (empty) -> yellow -> green (full).
+// The hue ramp is precomputed at compile time into a 256-entry table so the
+// per-item lookup is a plain index.
+const DURABILITY_LUT: [[u8; 3]; 256] = build_durability_lut();
+
+const fn build_durability_lut() -> [[u8; 3]; 256] {
+    let mut lut = [[0u8; 3]; 256];
+    let mut i = 0;
+    while i < 256 {
+        // First half ramps green up (red -> yellow); second half ramps red
+        // down (yellow -> green). Equivalent to the old HSV math, integer-only.
+        lut[i] = if i < 128 {
+            [255, (i * 2) as u8, 0]
+        } else {
+            [(510 - i * 2) as u8, 255, 0]
+        };
+        i += 1;
+    }
+    lut
+}
+
 pub fn durability_rgb(frac: f32) -> [u8; 3] {
-    let h = (frac.clamp(0.0, 1.0) / 3.0) * 6.0;
-    let i = h.floor() as i32 % 6;
-    let f = h - h.floor();
-    let (r, g, b) = match i {
-        0 => (1.0, f, 0.0),
-        1 => (1.0 - f, 1.0, 0.0),
-        _ => (0.0, 1.0, 0.0),
-    };
-    [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
+    DURABILITY_LUT[(frac.clamp(0.0, 1.0) * 255.0) as usize]
 }
 
 pub fn prettify_id(id: &str) -> String {

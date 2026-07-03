@@ -1,6 +1,6 @@
 use fastnbt::Value;
 
-use crate::model::{prettify_id, CopyAction, Entry, EntryKind, Item};
+use crate::model::{prettify_id, Entry, EntryKind, Item};
 use crate::parse::nbt::{as_i64, as_list, as_str, get, item_from_nbt};
 use crate::parse::players::remap_inventory_slot;
 
@@ -190,27 +190,17 @@ fn build_container(v: &Value) -> Option<Entry> {
     let mut nbt_blob = String::new();
     collect_search(get(v, "items"), &mut nbt_blob);
 
-    let meta = vec![
-        ("Type".into(), id.clone()),
-        ("Position".into(), format!("{}, {}, {}", x, y, z)),
-        ("Dimension".into(), dimension.clone()),
-        (
-            "Dungeon".into(),
-            if is_dungeon { "Yes".into() } else { "No".into() },
-        ),
+    let meta = meta![
+        "Type" => id.clone(),
+        "Position" => format!("{}, {}, {}", x, y, z),
+        "Dimension" => dimension.clone(),
+        "Dungeon" => if is_dungeon { "Yes" } else { "No" },
     ];
 
-    let tp = format!("/execute in {} run tp @s {} {} {}", dimension, x, y, z);
-    let copies = vec![
-        CopyAction { label: "Copy TP".into(), value: tp },
-        CopyAction {
-            label: "Copy Coords".into(),
-            value: format!("{} {} {}", x, y, z),
-        },
-        CopyAction {
-            label: "Copy Dimension".into(),
-            value: dimension.clone(),
-        },
+    let copies = copies![
+        "Copy TP" => format!("/execute in {} run tp @s {} {} {}", dimension, x, y, z),
+        "Copy Coords" => format!("{} {} {}", x, y, z),
+        "Copy Dimension" => dimension.clone(),
     ];
 
     let title = format!("{} @ {}, {}, {}", prettify_id(&id), x, y, z);
@@ -222,18 +212,11 @@ fn build_container(v: &Value) -> Option<Entry> {
         meta,
         copies,
         items,
-        upgrades: Vec::new(),
-        cols: 9,
-        rows: 0,
         is_dungeon,
         dimension,
-        owner: String::new(),
-        uuid: String::new(),
         coords,
-        search_blob: String::new(),
         nbt_blob: nbt_blob.to_lowercase(),
-        max_stack: 0,
-        all_enchants: Vec::new(),
+        ..Default::default()
     };
     let extra = format!("{} {} {} {}", id, x, y, z);
     entry.finalize(&extra);
@@ -292,14 +275,14 @@ fn make_player_entry(
     icon: &str,
     raw: Option<&Value>,
 ) -> Entry {
-    let copies = vec![
-        CopyAction { label: "Copy Name".into(), value: name.to_string() },
-        CopyAction { label: "Copy UUID".into(), value: uuid.to_string() },
+    let copies = copies![
+        "Copy Name" => name,
+        "Copy UUID" => uuid,
     ];
-    let meta = vec![
-        ("Player".into(), name.to_string()),
-        ("UUID".into(), uuid.to_string()),
-        ("Section".into(), section.to_string()),
+    let meta = meta![
+        "Player" => name,
+        "UUID" => uuid,
+        "Section" => section,
     ];
     let mut nbt_blob = String::new();
     collect_search(raw, &mut nbt_blob);
@@ -310,18 +293,10 @@ fn make_player_entry(
         meta,
         copies,
         items,
-        upgrades: Vec::new(),
-        cols: 9,
-        rows: 0,
-        is_dungeon: false,
-        dimension: String::new(),
         owner: name.to_lowercase(),
         uuid: uuid.to_lowercase(),
-        coords: None,
-        search_blob: String::new(),
         nbt_blob: nbt_blob.to_lowercase(),
-        max_stack: 0,
-        all_enchants: Vec::new(),
+        ..Default::default()
     };
     let extra = format!("{name} {uuid} {section}");
     entry.finalize(&extra);

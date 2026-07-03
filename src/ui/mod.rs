@@ -17,9 +17,14 @@ use crate::search::{DungeonFilter, EnchOp, Filters, Highlight, TextCat};
 use crate::settings::{SavedFile, Settings};
 use crate::store::Store;
 
-pub(crate) const ACCENT: Color32 = Color32::from_rgb(86, 171, 96);
-pub(crate) const GOLD: Color32 = Color32::from_rgb(212, 155, 36);
-const ERRC: Color32 = Color32::from_rgb(220, 90, 80);
+use crate::color::rgb;
+
+pub(crate) const ACCENT: Color32 = rgb(0x56ab60);
+pub(crate) const GOLD: Color32 = rgb(0xd49b24);
+const ERRC: Color32 = rgb(0xdc5a50);
+// Per-EntryKind title/badge colors (Container uses GOLD).
+pub(crate) const KIND_BACKPACK: Color32 = rgb(0xbe96e6);
+pub(crate) const KIND_PLAYER: Color32 = rgb(0x6ebef0);
 
 enum Msg {
     Atlas(Result<Atlas, String>),
@@ -690,7 +695,7 @@ impl eframe::App for App {
                 ui.heading(egui::RichText::new("Sprites").color(ACCENT));
                 ui.add_space(3.0);
                 egui::Frame::none()
-                    .fill(Color32::from_rgb(33, 35, 43))
+                    .fill(rgb(0x21232b))
                     .rounding(Rounding::same(6.0))
                     .inner_margin(egui::Margin::same(7.0))
                     .show(ui, |ui| {
@@ -758,7 +763,7 @@ impl eframe::App for App {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     for (i, s) in self.sources.iter_mut().enumerate() {
                         egui::Frame::none()
-                            .fill(Color32::from_rgb(33, 35, 43))
+                            .fill(rgb(0x21232b))
                             .rounding(Rounding::same(6.0))
                             .inner_margin(egui::Margin::same(7.0))
                             .show(ui, |ui| {
@@ -1109,7 +1114,7 @@ impl eframe::App for App {
                         if let Some(o) = &owner {
                             ui.label(
                                 egui::RichText::new(format!("Owner: {o}"))
-                                    .color(Color32::from_rgb(190, 150, 230))
+                                    .color(KIND_BACKPACK)
                                     .size(12.0),
                             );
                         }
@@ -1253,8 +1258,8 @@ fn search_help_ui(ui: &mut egui::Ui) {
 
 fn source_color(s: &Source) -> Color32 {
     match s.store.as_ref().and_then(|st| st.first_kind()) {
-        Some(EntryKind::Backpack) => Color32::from_rgb(190, 150, 230),
-        Some(EntryKind::Player) => Color32::from_rgb(110, 190, 240),
+        Some(EntryKind::Backpack) => KIND_BACKPACK,
+        Some(EntryKind::Player) => KIND_PLAYER,
         Some(EntryKind::Container) => GOLD,
         None => Color32::from_gray(200),
     }

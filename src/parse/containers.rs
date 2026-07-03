@@ -7,7 +7,7 @@ use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
 use serde_json::Value as J;
 
-use crate::model::{prettify_id, CopyAction, Entry, EntryKind, Item};
+use crate::model::{prettify_id, Entry, EntryKind, Item};
 use crate::parse::nbt::extract_text;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -217,27 +217,17 @@ pub(crate) fn build_container(el: &RawElement) -> Option<Entry> {
         collect_nbt(items_json, &mut nbt_blob);
     }
 
-    let meta = vec![
-        ("Type".into(), id.clone()),
-        ("Position".into(), format!("{}, {}, {}", x, y, z)),
-        ("Dimension".into(), dimension.clone()),
-        (
-            "Dungeon".into(),
-            if is_dungeon { "Yes".into() } else { "No".into() },
-        ),
+    let meta = meta![
+        "Type" => id.clone(),
+        "Position" => format!("{}, {}, {}", x, y, z),
+        "Dimension" => dimension.clone(),
+        "Dungeon" => if is_dungeon { "Yes" } else { "No" },
     ];
 
-    let tp = format!("/execute in {} run tp @s {} {} {}", dimension, x, y, z);
-    let copies = vec![
-        CopyAction { label: "Copy TP".into(), value: tp },
-        CopyAction {
-            label: "Copy Coords".into(),
-            value: format!("{} {} {}", x, y, z),
-        },
-        CopyAction {
-            label: "Copy Dimension".into(),
-            value: dimension.clone(),
-        },
+    let copies = copies![
+        "Copy TP" => format!("/execute in {} run tp @s {} {} {}", dimension, x, y, z),
+        "Copy Coords" => format!("{} {} {}", x, y, z),
+        "Copy Dimension" => dimension.clone(),
     ];
 
     let title = format!("{} @ {}, {}, {}", prettify_id(&id), x, y, z);
@@ -249,18 +239,11 @@ pub(crate) fn build_container(el: &RawElement) -> Option<Entry> {
         meta,
         copies,
         items,
-        upgrades: Vec::new(),
-        cols: 9,
-        rows: 0,
         is_dungeon,
         dimension,
-        owner: String::new(),
-        uuid: String::new(),
         coords,
-        search_blob: String::new(),
         nbt_blob: nbt_blob.to_lowercase(),
-        max_stack: 0,
-        all_enchants: Vec::new(),
+        ..Default::default()
     };
     let extra = format!("{} {} {} {}", id, x, y, z);
     entry.finalize(&extra);

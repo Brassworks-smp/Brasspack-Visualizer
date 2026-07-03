@@ -2,7 +2,7 @@
 use serde_json::Value as J;
 
 use crate::parse::containers::{item_from_json, RawElement};
-use crate::model::{CopyAction, Entry, EntryKind, Item};
+use crate::model::{Entry, EntryKind, Item};
 
 pub(crate) fn build_player(el: &RawElement) -> Vec<Entry> {
     let name = el
@@ -65,14 +65,14 @@ fn make_entry(
     icon: &str,
     raw: &J,
 ) -> Entry {
-    let copies = vec![
-        CopyAction { label: "Copy Name".into(), value: name.to_string() },
-        CopyAction { label: "Copy UUID".into(), value: uuid.to_string() },
+    let copies = copies![
+        "Copy Name" => name,
+        "Copy UUID" => uuid,
     ];
-    let meta = vec![
-        ("Player".into(), name.to_string()),
-        ("UUID".into(), uuid.to_string()),
-        ("Section".into(), section.to_string()),
+    let meta = meta![
+        "Player" => name,
+        "UUID" => uuid,
+        "Section" => section,
     ];
     let mut nbt_blob = String::new();
     crate::parse::containers::collect_nbt(raw, &mut nbt_blob);
@@ -83,18 +83,10 @@ fn make_entry(
         meta,
         copies,
         items,
-        upgrades: Vec::new(),
-        cols: 9,
-        rows: 0,
-        is_dungeon: false,
-        dimension: String::new(),
         owner: name.to_lowercase(),
         uuid: uuid.to_lowercase(),
-        coords: None,
-        search_blob: String::new(),
         nbt_blob: nbt_blob.to_lowercase(),
-        max_stack: 0,
-        all_enchants: Vec::new(),
+        ..Default::default()
     };
     let extra = format!("{name} {uuid} {section}");
     entry.finalize(&extra);

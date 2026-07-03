@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[macro_use]
+mod macros;
 mod assets;
+mod color;
 mod model;
 mod parse;
 mod profiles;
@@ -303,18 +306,19 @@ fn inspect_items(path: &str, sub: &str) {
 }
 
 fn install_theme(ctx: &egui::Context) {
-    use egui::{Color32, Rounding, Stroke};
+    use crate::color::rgb;
+    use egui::{Rounding, Stroke};
     let mut visuals = egui::Visuals::dark();
 
-    let bg = Color32::from_rgb(24, 25, 30);
-    let panel = Color32::from_rgb(30, 32, 39);
-    let accent = Color32::from_rgb(86, 171, 96);
+    let bg = rgb(0x18191e);
+    let panel = rgb(0x1e2027);
+    let accent = rgb(0x56ab60);
 
-    visuals.override_text_color = Some(Color32::from_rgb(224, 226, 232));
+    visuals.override_text_color = Some(rgb(0xe0e2e8));
     visuals.panel_fill = panel;
     visuals.window_fill = bg;
-    visuals.extreme_bg_color = Color32::from_rgb(18, 19, 23);
-    visuals.faint_bg_color = Color32::from_rgb(38, 40, 48);
+    visuals.extreme_bg_color = rgb(0x121317);
+    visuals.faint_bg_color = rgb(0x262830);
     visuals.hyperlink_color = accent;
     visuals.selection.bg_fill = accent.linear_multiply(0.55);
     visuals.selection.stroke = Stroke::new(1.0, accent);
@@ -324,10 +328,10 @@ fn install_theme(ctx: &egui::Context) {
     visuals.widgets.inactive.rounding = r;
     visuals.widgets.hovered.rounding = r;
     visuals.widgets.active.rounding = r;
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(46, 49, 58);
-    visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(46, 49, 58);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(58, 62, 73);
-    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(58, 62, 73);
+    visuals.widgets.inactive.bg_fill = rgb(0x2e313a);
+    visuals.widgets.inactive.weak_bg_fill = rgb(0x2e313a);
+    visuals.widgets.hovered.bg_fill = rgb(0x3a3e49);
+    visuals.widgets.hovered.weak_bg_fill = rgb(0x3a3e49);
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, accent.linear_multiply(0.7));
     visuals.widgets.active.bg_fill = accent.linear_multiply(0.8);
 

@@ -2,7 +2,8 @@ use eframe::egui::{
     self, Color32, FontId, Id, Pos2, Rect, Rounding, Sense, Stroke, Vec2,
 };
 
-use super::{Action, ACCENT, GOLD};
+use super::{Action, ACCENT, GOLD, KIND_BACKPACK, KIND_PLAYER};
+use crate::color::{rgb, rgb_bytes};
 use crate::model::{format_count, prettify_id, Bar, Entry, EntryKind, Item};
 use crate::profiles::Profiles;
 use crate::render::atlas::Atlas;
@@ -13,7 +14,7 @@ type BpIndex = std::collections::HashMap<String, Vec<Item>>;
 // A drill-down request from a nested slot: (title, items, backpack uuid if any).
 pub(crate) type Drill = (String, Vec<Item>, Option<String>);
 
-const MATCH: Color32 = Color32::from_rgb(255, 206, 70);
+const MATCH: Color32 = rgb(0xffce46);
 
 // Does this item or anything nested inside it satisfy the search?
 fn matches_deep(item: &Item, hl: &Highlight, bp: &BpIndex) -> bool {
@@ -95,8 +96,8 @@ pub(crate) fn draw_card(
     animating: &mut bool,
 ) {
     egui::Frame::none()
-        .fill(Color32::from_rgb(33, 35, 43))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(52, 55, 66)))
+        .fill(rgb(0x21232b))
+        .stroke(Stroke::new(1.0, rgb(0x343742)))
         .rounding(Rounding::same(10.0))
         .inner_margin(egui::Margin::same(12.0))
         .show(ui, |ui| {
@@ -130,8 +131,8 @@ pub(crate) fn draw_card(
 
                 ui.vertical(|ui| {
                     let title_col = match entry.kind {
-                        EntryKind::Backpack => Color32::from_rgb(190, 150, 230),
-                        EntryKind::Player => Color32::from_rgb(110, 190, 240),
+                        EntryKind::Backpack => KIND_BACKPACK,
+                        EntryKind::Player => KIND_PLAYER,
                         EntryKind::Container => GOLD,
                     };
                     ui.add(
@@ -289,7 +290,7 @@ fn paint_slot(
         paint_bar(ui, srect, bar);
     }
     if let Some(col) = item.outline {
-        paint_outline(ui, srect, Color32::from_rgb(col[0], col[1], col[2]));
+        paint_outline(ui, srect, rgb_bytes(col));
     }
     paint_count(ui, srect, item.count);
 }
@@ -297,8 +298,8 @@ fn paint_slot(
 fn header_tooltip(ui: &mut egui::Ui, entry: &Entry) {
     ui.set_max_width(320.0);
     let (kind, col) = match entry.kind {
-        EntryKind::Backpack => ("Backpack", Color32::from_rgb(190, 150, 230)),
-        EntryKind::Player => ("Player", Color32::from_rgb(110, 190, 240)),
+        EntryKind::Backpack => ("Backpack", KIND_BACKPACK),
+        EntryKind::Player => ("Player", KIND_PLAYER),
         EntryKind::Container => ("Container", GOLD),
     };
     ui.label(egui::RichText::new(kind).color(col).strong());
@@ -312,15 +313,15 @@ fn header_tooltip(ui: &mut egui::Ui, entry: &Entry) {
 fn paint_slot_bg(ui: &egui::Ui, rect: Rect, filled: bool) {
     let painter = ui.painter();
     let bg = if filled {
-        Color32::from_rgb(43, 45, 54)
+        rgb(0x2b2d36)
     } else {
-        Color32::from_rgb(38, 40, 48)
+        rgb(0x262830)
     };
     painter.rect_filled(rect, Rounding::same(3.0), bg);
     painter.rect_stroke(
         rect.shrink(0.5),
         Rounding::same(3.0),
-        Stroke::new(1.0, Color32::from_rgb(24, 25, 30)),
+        Stroke::new(1.0, rgb(0x18191e)),
     );
 }
 
@@ -343,14 +344,14 @@ fn paint_bar(ui: &egui::Ui, rect: Rect, bar: &Bar) {
     painter.rect_filled(
         Rect::from_min_size(Pos2::new(left, y), Vec2::new(full, h)),
         Rounding::ZERO,
-        Color32::from_rgb(0, 0, 0),
+        rgb(0x000000),
     );
     let fw = (full * bar.frac.clamp(0.0, 1.0)).max(0.0);
     let c = bar.color;
     painter.rect_filled(
         Rect::from_min_size(Pos2::new(left, y), Vec2::new(fw, (h - 1.0).max(1.0))),
         Rounding::ZERO,
-        Color32::from_rgb(c[0], c[1], c[2]),
+        rgb_bytes(c),
     );
 }
 
@@ -392,13 +393,13 @@ fn paint_texture(ui: &egui::Ui, atlas: &mut Atlas, rect: Rect, id: &str) -> bool
 // missing texture rather than a blank slot.
 fn paint_missing(ui: &egui::Ui, rect: Rect) {
     let painter = ui.painter();
-    painter.rect_filled(rect, Rounding::same(2.0), Color32::from_rgb(48, 44, 58));
+    painter.rect_filled(rect, Rounding::same(2.0), rgb(0x302c3a));
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         "?",
         FontId::proportional(rect.height() * 0.62),
-        Color32::from_rgb(150, 120, 180),
+        rgb(0x9678b4),
     );
 }
 
@@ -469,7 +470,7 @@ fn item_tooltip(
         paint_icon(ui, atlas, profiles, rect, item, gframe);
         ui.vertical(|ui| {
             let name_col = if item.custom_name.is_some() {
-                Color32::from_rgb(255, 240, 160)
+                rgb(0xfff0a0)
             } else {
                 Color32::WHITE
             };
@@ -486,7 +487,7 @@ fn item_tooltip(
         let col = item.bar.map(|b| b.color).unwrap_or([150, 200, 150]);
         ui.label(
             egui::RichText::new(g)
-                .color(Color32::from_rgb(col[0], col[1], col[2]))
+                .color(rgb_bytes(col))
                 .size(12.0),
         );
     } else if let Some(dmg) = item.damage {
@@ -494,10 +495,10 @@ fn item_tooltip(
             Some(max) if max > 0 => format!("Durability: {} / {} used", max - dmg, max),
             _ => format!("Damage: {dmg}"),
         };
-        ui.label(egui::RichText::new(dur).color(Color32::from_rgb(150, 200, 150)).size(12.0));
+        ui.label(egui::RichText::new(dur).color(rgb(0x96c896)).size(12.0));
     }
     if let Some(p) = &item.potion {
-        ui.label(egui::RichText::new(format!("Potion: {p}")).color(Color32::from_rgb(200, 120, 220)));
+        ui.label(egui::RichText::new(format!("Potion: {p}")).color(rgb(0xc878dc)));
     }
 
     if !item.enchants.is_empty() {
@@ -514,7 +515,7 @@ fn item_tooltip(
             ui.label(
                 egui::RichText::new(line)
                     .italics()
-                    .color(Color32::from_rgb(160, 130, 210))
+                    .color(rgb(0xa082d2))
                     .size(12.0),
             );
         }
@@ -545,7 +546,7 @@ fn item_tooltip(
                 paint_bar(ui, srect, bar);
             }
             if let Some(col) = c.outline {
-                paint_outline(ui, srect, Color32::from_rgb(col[0], col[1], col[2]));
+                paint_outline(ui, srect, rgb_bytes(col));
             }
             if has_openable(c, bp) {
                 paint_nested_badge(ui, srect);
@@ -648,11 +649,11 @@ pub(crate) fn nested_grid(
 
 fn enchant_color(level: i32) -> Color32 {
     if level > 10 {
-        Color32::from_rgb(240, 90, 80)
+        rgb(0xf05a50)
     } else if level > 5 {
         GOLD
     } else {
-        Color32::from_rgb(170, 170, 235)
+        rgb(0xaaaaeb)
     }
 }
 
