@@ -1,13 +1,16 @@
 use eframe::egui::{
-    self, Align, Color32, FontId, Id, Layout, Pos2, Rect, Rounding, Sense, Stroke, Vec2,
+    self, Color32, FontId, Id, Pos2, Rect, Rounding, Sense, Stroke, Vec2,
 };
 
 use super::{Action, ACCENT, GOLD};
-use crate::model::{format_count, prettify_id, Entry, EntryKind, Item};
+use crate::model::{format_count, prettify_id, Bar, Entry, EntryKind, Item};
 use crate::profiles::Profiles;
 use crate::render::atlas::Atlas;
 
 type BpIndex = std::collections::HashMap<String, Vec<Item>>;
+
+// A drill-down request from a nested slot: (title, items, backpack uuid if any).
+pub(crate) type Drill = (String, Vec<Item>, Option<String>);
 
 fn resolve_nested<'a>(item: &'a Item, bp: &'a BpIndex) -> &'a [Item] {
     if !item.contents.is_empty() {
@@ -24,10 +27,18 @@ fn has_openable(item: &Item, bp: &BpIndex) -> bool {
 }
 
 pub(crate) fn card_height(m: &crate::store::EntryMeta, slot: f32) -> f32 {
-    let header = 56.0_f32.max(26.0 + m.meta_len as f32 * 16.0);
-    let upgrades = if m.has_upgrades() { 4.0 + slot } else { 0.0 };
+    let header = 52.0_f32.max(24.0 + m.meta_len as f32 * 16.0);
+    let actions = 34.0;
+    let upgrades = if m.has_upgrades() { 12.0 + slot } else { 0.0 };
     let rows = (m.rows as usize).max(1) as f32;
-    12.0 + header + 8.0 + upgrades + 6.0 + rows * slot + 12.0 + 6.0
+    // frame margins (12*2) + header + gap + actions + gap + upgrades + gap + grid + pad
+    24.0 + header + 8.0 + actions + 10.0 + upgrades + rows * slot + 14.0
+}
+
+// Fixed on-screen width of a card at the given zoom. Wide enough that the
+// 9-column grid and the compact action toolbar never need to wrap.
+pub(crate) fn card_width(slot: f32) -> f32 {
+    (9.0 * slot + 24.0).max(320.0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -51,7 +62,7 @@ pub(crate) fn draw_card(
         .inner_margin(egui::Margin::same(12.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
+                let (rect, hdr_resp) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
                 paint_slot_bg(ui, rect, false);
                 let drew_head = entry.kind == EntryKind::Player
                     && !entry.uuid.is_empty()
@@ -64,6 +75,11 @@ pub(crate) fn draw_card(
                 if !drew_head {
                     paint_texture(ui, atlas, rect.shrink(4.0), &entry.header_icon);
                 }
+                if hdr_resp.hovered() {
+                    paint_hover_ring(ui, rect);
+                }
+                let e = entry.clone();
+                hdr_resp.on_hover_ui(|ui| header_tooltip(ui, &e));
                 if entry.kind == EntryKind::Backpack
                     && !entry.uuid.is_empty()
                     && (entry.owner.is_empty() || entry.owner == "unknown")
@@ -77,7 +93,12 @@ pub(crate) fn draw_card(
                         EntryKind::Player => Color32::from_rgb(110, 190, 240),
                         EntryKind::Container => GOLD,
                     };
-                    ui.label(egui::RichText::new(&entry.title).color(title_col).strong());
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&entry.title).color(title_col).strong(),
+                        )
+                        .truncate(),
+                    );
                     for (label, value) in &entry.meta {
                         ui.label(
                             egui::RichText::new(format!("{label}: {value}"))
@@ -86,38 +107,45 @@ pub(crate) fn draw_card(
                         );
                     }
                 });
+            });
 
-                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                    if ui.button("🖼 Export").on_hover_text("Save this as a PNG").clicked() {
-                        actions.push(Action::Export(si, ei));
-                    }
-                    if ui.button("📋 Copy img").clicked() {
-                        actions.push(Action::CopyImg(si, ei));
-                    }
-                    for c in &entry.copies {
-                        if ui.button(&c.label).clicked() {
-                            actions.push(Action::Copy(c.value.clone()));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("🖼 PNG").on_hover_text("Export this as a PNG").clicked() {
+                    actions.push(Action::Export(si, ei));
+                }
+                if ui.button("📋 Image").on_hover_text("Copy image to clipboard").clicked() {
+                    actions.push(Action::CopyImg(si, ei));
+                }
+                if !entry.copies.is_empty() {
+                    ui.menu_button("⧉ Copy ▾", |ui| {
+                        for c in &entry.copies {
+                            if ui.button(&c.label).clicked() {
+                                actions.push(Action::Copy(c.value.clone()));
+                                ui.close_menu();
+                            }
                         }
-                    }
-                });
+                    });
+                }
             });
 
             if !entry.upgrades.is_empty() {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Upgrades:").weak().size(12.0));
+                    let mut hovered: Option<Rect> = None;
                     for (idx, up) in entry.upgrades.iter().enumerate() {
                         let (rect, _) = ui.allocate_exact_size(Vec2::splat(slot), Sense::hover());
-                        paint_slot_bg(ui, rect, false);
-                        if paint_icon(ui, atlas, profiles, rect.shrink(3.0), up, gframe) {
-                            *animating = true;
-                        }
+                        paint_slot(ui, atlas, profiles, rect, up, gframe, false, animating);
                         let resp = ui.interact(rect, Id::new(("up", si, ei, idx)), Sense::hover());
                         if resp.hovered() {
-                            paint_hover_ring(ui, rect);
+                            hovered = Some(rect);
                         }
                         let up = up.clone();
                         resp.on_hover_ui(|ui| item_tooltip(ui, atlas, &up, gframe, bp, profiles));
+                    }
+                    if let Some(r) = hovered {
+                        paint_hover_ring(ui, r);
                     }
                 });
             }
@@ -135,40 +163,88 @@ pub(crate) fn draw_card(
             for it in &entry.items {
                 by_slot.insert(it.slot, it);
             }
+            let mut hovered: Option<Rect> = None;
             for r in 0..rows {
                 for c in 0..cols {
                     let min = grid_rect.min + Vec2::new(c as f32 * slot, r as f32 * slot);
                     let srect = Rect::from_min_size(min, Vec2::splat(slot));
-                    paint_slot_bg(ui, srect, true);
                     let sidx = (r * cols + c) as i32;
                     if let Some(item) = by_slot.get(&sidx) {
-                        let icon = srect.shrink(slot * 0.1);
-                        if paint_icon(ui, atlas, profiles, icon, item, gframe) {
-                            *animating = true;
-                        }
-                        paint_count(ui, srect, item.count);
                         let openable = has_openable(item, bp);
+                        paint_slot(ui, atlas, profiles, srect, item, gframe, true, animating);
                         if openable {
                             paint_nested_badge(ui, srect);
                         }
                         let sense = if openable { Sense::click() } else { Sense::hover() };
                         let resp = ui.interact(srect, Id::new(("slot", si, ei, sidx)), sense);
                         if resp.hovered() {
-                            paint_hover_ring(ui, srect);
+                            hovered = Some(srect);
                         }
                         if openable && resp.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
                         if openable && resp.clicked() {
                             let items = resolve_nested(item, bp).to_vec();
-                            actions.push(Action::OpenNested(item.display_name(), items));
+                            actions.push(Action::OpenNested(
+                                item.display_name(),
+                                items,
+                                item.storage_uuid.clone(),
+                            ));
                         }
                         let item = (*item).clone();
                         resp.on_hover_ui(|ui| item_tooltip(ui, atlas, &item, gframe, bp, profiles));
+                    } else {
+                        paint_slot_bg(ui, srect, true);
                     }
                 }
             }
+            if let Some(r) = hovered {
+                paint_hover_ring(ui, r);
+            }
         });
+}
+
+// Draw a filled slot: background, item icon, durability/tank bar, special
+// outline, and stack count. The hover ring is drawn separately, on top of the
+// whole grid, so it never gets clipped by a neighbouring slot.
+#[allow(clippy::too_many_arguments)]
+fn paint_slot(
+    ui: &egui::Ui,
+    atlas: &mut Atlas,
+    profiles: &mut Profiles,
+    srect: Rect,
+    item: &Item,
+    gframe: usize,
+    filled: bool,
+    animating: &mut bool,
+) {
+    paint_slot_bg(ui, srect, filled);
+    let icon = srect.shrink(srect.width() * 0.1);
+    if paint_icon(ui, atlas, profiles, icon, item, gframe) {
+        *animating = true;
+    }
+    if let Some(bar) = &item.bar {
+        paint_bar(ui, srect, bar);
+    }
+    if let Some(col) = item.outline {
+        paint_outline(ui, srect, Color32::from_rgb(col[0], col[1], col[2]));
+    }
+    paint_count(ui, srect, item.count);
+}
+
+fn header_tooltip(ui: &mut egui::Ui, entry: &Entry) {
+    ui.set_max_width(320.0);
+    let (kind, col) = match entry.kind {
+        EntryKind::Backpack => ("Backpack", Color32::from_rgb(190, 150, 230)),
+        EntryKind::Player => ("Player", Color32::from_rgb(110, 190, 240)),
+        EntryKind::Container => ("Container", GOLD),
+    };
+    ui.label(egui::RichText::new(kind).color(col).strong());
+    ui.label(egui::RichText::new(prettify_id(&entry.header_icon)).size(12.0));
+    ui.label(egui::RichText::new(&entry.header_icon).weak().size(11.0).monospace());
+    for (label, value) in &entry.meta {
+        ui.label(egui::RichText::new(format!("{label}: {value}")).weak().size(11.0));
+    }
 }
 
 fn paint_slot_bg(ui: &egui::Ui, rect: Rect, filled: bool) {
@@ -187,8 +263,40 @@ fn paint_slot_bg(ui: &egui::Ui, rect: Rect, filled: bool) {
 }
 
 fn paint_hover_ring(ui: &egui::Ui, rect: Rect) {
+    // Drawn on top of the whole grid and inset so it stays fully inside the
+    // slot instead of clipping into neighbouring cells.
     ui.painter()
-        .rect_stroke(rect.shrink(1.0), Rounding::same(3.0), Stroke::new(1.5, ACCENT));
+        .rect_stroke(rect.shrink(1.5), Rounding::same(3.0), Stroke::new(2.0, ACCENT));
+}
+
+// Minecraft-style durability / tank fill bar along the bottom of a slot.
+fn paint_bar(ui: &egui::Ui, rect: Rect, bar: &Bar) {
+    let m = rect.width() * 0.12;
+    let h = (rect.height() * 0.09).max(2.0);
+    let y = rect.bottom() - rect.height() * 0.18;
+    let left = rect.left() + m;
+    let full = rect.width() - 2.0 * m;
+    let painter = ui.painter();
+    // dark backing (with a 1px shadow row beneath like vanilla)
+    painter.rect_filled(
+        Rect::from_min_size(Pos2::new(left, y), Vec2::new(full, h)),
+        Rounding::ZERO,
+        Color32::from_rgb(0, 0, 0),
+    );
+    let fw = (full * bar.frac.clamp(0.0, 1.0)).max(0.0);
+    let c = bar.color;
+    painter.rect_filled(
+        Rect::from_min_size(Pos2::new(left, y), Vec2::new(fw, (h - 1.0).max(1.0))),
+        Rounding::ZERO,
+        Color32::from_rgb(c[0], c[1], c[2]),
+    );
+}
+
+// Special slot outline (e.g. white for Create backtanks). Inset so it reads as
+// a highlight without bleeding into adjacent slots.
+fn paint_outline(ui: &egui::Ui, rect: Rect, color: Color32) {
+    ui.painter()
+        .rect_stroke(rect.shrink(1.5), Rounding::same(3.0), Stroke::new(2.0, color));
 }
 
 fn paint_nested_badge(ui: &egui::Ui, rect: Rect) {
@@ -225,7 +333,11 @@ fn paint_icon(
 ) -> bool {
     if let Some(key) = item.head_key() {
         if let Some(tex) = profiles.head(ui.ctx(), key) {
-            ui.painter().image(tex.id(), rect.expand(rect.width() * 0.06), full_uv(), Color32::WHITE);
+            // A player head in a Minecraft slot renders as a small 8px skull,
+            // noticeably smaller than a full item sprite. The head3d texture
+            // already carries a margin, so drawing it slightly inset from the
+            // icon rect matches the in-game footprint.
+            ui.painter().image(tex.id(), rect.shrink(rect.width() * 0.06), full_uv(), Color32::WHITE);
             return false;
         }
     }
@@ -287,9 +399,16 @@ fn item_tooltip(
         });
     });
 
-    if let Some(dmg) = item.damage {
+    if let Some(g) = &item.gauge_text {
+        let col = item.bar.map(|b| b.color).unwrap_or([150, 200, 150]);
+        ui.label(
+            egui::RichText::new(g)
+                .color(Color32::from_rgb(col[0], col[1], col[2]))
+                .size(12.0),
+        );
+    } else if let Some(dmg) = item.damage {
         let dur = match item.max_damage {
-            Some(max) if max > 0 => format!("Durability: {} / {} used", dmg, max),
+            Some(max) if max > 0 => format!("Durability: {} / {} used", max - dmg, max),
             _ => format!("Damage: {dmg}"),
         };
         ui.label(egui::RichText::new(dur).color(Color32::from_rgb(150, 200, 150)).size(12.0));
@@ -339,6 +458,12 @@ fn item_tooltip(
             let srect = Rect::from_min_size(min, Vec2::splat(cell));
             paint_slot_bg(ui, srect, true);
             paint_icon(ui, atlas, profiles, srect.shrink(2.0), c, gframe);
+            if let Some(bar) = &c.bar {
+                paint_bar(ui, srect, bar);
+            }
+            if let Some(col) = c.outline {
+                paint_outline(ui, srect, Color32::from_rgb(col[0], col[1], col[2]));
+            }
             if has_openable(c, bp) {
                 paint_nested_badge(ui, srect);
             }
@@ -382,7 +507,7 @@ pub(crate) fn nested_grid(
     gframe: usize,
     slot: f32,
     animating: &mut bool,
-) -> Option<(String, Vec<Item>)> {
+) -> Option<Drill> {
     let cols = 9usize;
     let rows = items.len().max(1).div_ceil(cols);
     let (rect, _) = ui.allocate_exact_size(
@@ -390,31 +515,35 @@ pub(crate) fn nested_grid(
         Sense::hover(),
     );
     let mut drill = None;
+    let mut hovered: Option<Rect> = None;
     for (i, it) in items.iter().enumerate() {
         let min = rect.min + Vec2::new((i % cols) as f32 * slot, (i / cols) as f32 * slot);
         let srect = Rect::from_min_size(min, Vec2::splat(slot));
-        paint_slot_bg(ui, srect, true);
-        if paint_icon(ui, atlas, profiles, srect.shrink(slot * 0.1), it, gframe) {
-            *animating = true;
-        }
-        paint_count(ui, srect, it.count);
         let openable = has_openable(it, bp);
+        paint_slot(ui, atlas, profiles, srect, it, gframe, true, animating);
         if openable {
             paint_nested_badge(ui, srect);
         }
         let sense = if openable { Sense::click() } else { Sense::hover() };
         let resp = ui.interact(srect, Id::new(("nested-slot", i)), sense);
         if resp.hovered() {
-            paint_hover_ring(ui, srect);
+            hovered = Some(srect);
         }
         if openable && resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         if openable && resp.clicked() {
-            drill = Some((it.display_name(), resolve_nested(it, bp).to_vec()));
+            drill = Some((
+                it.display_name(),
+                resolve_nested(it, bp).to_vec(),
+                it.storage_uuid.clone(),
+            ));
         }
         let it2 = it.clone();
         resp.on_hover_ui(|ui| item_tooltip(ui, atlas, &it2, gframe, bp, profiles));
+    }
+    if let Some(r) = hovered {
+        paint_hover_ring(ui, r);
     }
     drill
 }

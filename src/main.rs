@@ -114,6 +114,17 @@ fn parse_report(path: &str) {
                 .flat_map(|e| e.items.iter())
                 .filter(|i| i.head_skin.is_some())
                 .count();
+            let bars = entries
+                .iter()
+                .flat_map(|e| e.items.iter())
+                .filter(|i| i.bar.is_some())
+                .count();
+            let outlines = entries
+                .iter()
+                .flat_map(|e| e.items.iter())
+                .filter(|i| i.outline.is_some())
+                .count();
+            println!("gauges: {bars} bars, {outlines} outlines");
             println!(
                 "parsed {} entries, {} items, {} entries-with-enchants, max_lvl={}, {} nested-container items, {} player-heads ({} with inline skin) in {:?}",
                 entries.len(),

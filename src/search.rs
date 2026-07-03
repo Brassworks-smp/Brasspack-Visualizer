@@ -292,7 +292,7 @@ impl Default for Filters {
             dimension: String::new(),
             nbt: String::new(),
             dungeon: DungeonFilter::Any,
-            hide_empty: false,
+            hide_empty: true,
             min_count: String::new(),
             x_min: String::new(),
             x_max: String::new(),
@@ -318,7 +318,7 @@ impl Filters {
             || !self.dimension.trim().is_empty()
             || !self.nbt.trim().is_empty()
             || self.dungeon != DungeonFilter::Any
-            || self.hide_empty
+            || !self.hide_empty
             || !self.min_count.trim().is_empty()
             || [
                 &self.x_min, &self.x_max, &self.y_min, &self.y_max, &self.z_min, &self.z_max,

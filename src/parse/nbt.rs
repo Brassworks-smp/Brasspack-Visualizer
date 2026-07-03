@@ -511,3 +511,119 @@ fn gather_text(v: &serde_json::Value, out: &mut String) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod gauge_tests {
+    use super::*;
+    use fastnbt::Value;
+    use std::collections::HashMap;
+
+    fn cmp(pairs: Vec<(&str, Value)>) -> Value {
+        Value::Compound(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
+
+    #[test]
+    fn filling_tank_bar() {
+        let item = cmp(vec![
+            ("id", Value::String("createaddition:small_filling_tank".into())),
+            ("count", Value::Int(1)),
+            (
+                "components",
+                cmp(vec![(
+                    "minecraft:custom_data",
+                    cmp(vec![("tag_stock", Value::Int(400))]),
+                )]),
+            ),
+        ]);
+        let it = item_from_nbt(&item, 0).unwrap();
+        let bar = it.bar.expect("tank bar");
+        assert!((bar.frac - 0.5).abs() < 1e-3, "400/800 = 0.5, got {}", bar.frac);
+        assert_eq!(bar.color, [0x79, 0x97, 0xd9]);
+    }
+
+    #[test]
+    fn fueling_tank_medium_capacity() {
+        let item = cmp(vec![
+            ("id", Value::String("createaddition:medium_fueling_tank".into())),
+            ("count", Value::Int(1)),
+            (
+                "components",
+                cmp(vec![(
+                    "minecraft:custom_data",
+                    cmp(vec![("tag_stock", Value::Int(800))]),
+                )]),
+            ),
+        ]);
+        let it = item_from_nbt(&item, 0).unwrap();
+        let bar = it.bar.expect("tank bar");
+        assert!((bar.frac - 0.5).abs() < 1e-3, "800/1600 = 0.5, got {}", bar.frac);
+        assert_eq!(bar.color, [0xff, 0xa5, 0x65]);
+    }
+
+    #[test]
+    fn backtank_white_outline_and_air() {
+        let item = cmp(vec![
+            ("id", Value::String("create:netherite_backtank".into())),
+            ("count", Value::Int(1)),
+            (
+                "components",
+                cmp(vec![(
+                    "minecraft:custom_data",
+                    cmp(vec![("Air", Value::Float(900.0))]),
+                )]),
+            ),
+        ]);
+        let it = item_from_nbt(&item, 0).unwrap();
+        assert_eq!(it.outline, Some([255, 255, 255]));
+        let bar = it.bar.expect("air bar");
+        assert!((bar.frac - 0.5).abs() < 1e-3, "900/1800 = 0.5, got {}", bar.frac);
+    }
+
+    #[test]
+    fn vanilla_durability_bar() {
+        let item = cmp(vec![
+            ("id", Value::String("minecraft:diamond_pickaxe".into())),
+            ("count", Value::Int(1)),
+            (
+                "components",
+                cmp(vec![
+                    ("minecraft:damage", Value::Int(312)),
+                    ("minecraft:max_damage", Value::Int(1561)),
+                ]),
+            ),
+        ]);
+        let it = item_from_nbt(&item, 0).unwrap();
+        let bar = it.bar.expect("durability bar");
+        let expect = (1561.0 - 312.0) / 1561.0;
+        assert!((bar.frac - expect).abs() < 1e-3);
+    }
+
+    #[test]
+    fn toolbox_nested_contents() {
+        let inner = cmp(vec![
+            ("id", Value::String("minecraft:iron_ingot".into())),
+            ("count", Value::Int(64)),
+        ]);
+        let item = cmp(vec![
+            ("id", Value::String("create:toolbox".into())),
+            ("count", Value::Int(1)),
+            (
+                "components",
+                cmp(vec![(
+                    "minecraft:custom_data",
+                    cmp(vec![(
+                        "Compartments",
+                        Value::List(vec![
+                            Value::List(vec![inner]),
+                            Value::List(vec![]),
+                        ]),
+                    )]),
+                )]),
+            ),
+        ]);
+        let it = item_from_nbt(&item, 0).unwrap();
+        assert_eq!(it.contents.len(), 1);
+        assert_eq!(it.contents[0].id, "minecraft:iron_ingot");
+        assert_eq!(it.contents[0].count, 64);
+    }
+}

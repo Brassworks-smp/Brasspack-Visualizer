@@ -8,7 +8,7 @@ use eframe::egui::{
     self, Align, Color32, FontId, Id, Layout, Pos2, Rect, Rounding, Stroke, Vec2,
 };
 
-use card::{card_height, draw_card, nested_grid};
+use card::{card_height, card_width, draw_card, nested_grid};
 use crate::render::atlas::{Atlas, GLINT_FRAMES};
 use crate::render::export::McFont;
 use crate::model::{Entry, EntryKind, Item};
@@ -75,12 +75,20 @@ pub(crate) enum Action {
     Copy(String),
     CopyImg(usize, usize),
     Export(usize, usize),
-    OpenNested(String, Vec<Item>),
+    OpenNested(String, Vec<Item>, Option<String>),
+}
+
+#[derive(Clone, Default)]
+struct BpInfo {
+    owner: String,
 }
 
 struct PopupLevel {
     title: String,
     items: Vec<Item>,
+    uuid: Option<String>,
+    owner: Option<String>,
+    copies: Vec<crate::model::CopyAction>,
 }
 
 pub struct App {
@@ -102,7 +110,9 @@ pub struct App {
     hovering_file: bool,
     advanced_open: bool,
     bp_index: std::collections::HashMap<String, Vec<Item>>,
+    bp_meta: std::collections::HashMap<String, BpInfo>,
     popup: Vec<PopupLevel>,
+    search_help: bool,
     profiles: Profiles,
     next_id: u64,
 }
@@ -174,7 +184,9 @@ impl App {
             hovering_file: false,
             advanced_open: false,
             bp_index: std::collections::HashMap::new(),
+            bp_meta: std::collections::HashMap::new(),
             popup: Vec::new(),
+            search_help: false,
             profiles: Profiles::new(),
             next_id: 0,
         };
@@ -421,18 +433,58 @@ impl App {
 
     fn rebuild_bp_index(&mut self) {
         self.bp_index.clear();
+        self.bp_meta.clear();
         for s in &self.sources {
             if !s.enabled {
                 continue;
             }
             let Some(store) = &s.store else { continue };
             for e in store.mem_entries() {
-                if !e.uuid.is_empty() && !e.items.is_empty() {
+                if e.kind != EntryKind::Backpack || e.uuid.is_empty() {
+                    continue;
+                }
+                if !e.items.is_empty() {
                     self.bp_index
                         .entry(e.uuid.clone())
                         .or_insert_with(|| e.items.clone());
                 }
+                self.bp_meta.entry(e.uuid.clone()).or_insert_with(|| {
+                    let owner = e
+                        .meta
+                        .iter()
+                        .find(|(k, _)| k == "Owner")
+                        .map(|(_, v)| v.clone())
+                        .filter(|v| !v.is_empty() && v != "Unknown")
+                        .unwrap_or_else(|| e.owner.clone());
+                    BpInfo { owner }
+                });
             }
+        }
+    }
+
+    fn open_nested(&self, title: String, items: Vec<Item>, uuid: Option<String>) -> PopupLevel {
+        let info = uuid.as_ref().and_then(|u| self.bp_meta.get(u));
+        let mut copies = Vec::new();
+        if let Some(u) = &uuid {
+            if let Some(info) = info {
+                if !info.owner.is_empty() {
+                    copies.push(crate::model::CopyAction {
+                        label: "Copy Owner".into(),
+                        value: info.owner.clone(),
+                    });
+                }
+            }
+            copies.push(crate::model::CopyAction {
+                label: "Copy UUID".into(),
+                value: u.clone(),
+            });
+        }
+        PopupLevel {
+            title,
+            items,
+            owner: info.map(|i| i.owner.clone()).filter(|s| !s.is_empty()),
+            uuid,
+            copies,
         }
     }
 
@@ -513,10 +565,18 @@ impl eframe::App for App {
                 changed |= ui
                     .add(
                         egui::TextEdit::singleline(&mut self.filters.text)
-                            .hint_text("search…")
-                            .desired_width(240.0),
+                            .hint_text("search…  (and / or / not, quotes, parens)")
+                            .desired_width(280.0),
                     )
                     .changed();
+
+                if ui
+                    .selectable_label(self.search_help, "❔")
+                    .on_hover_text("Search syntax help")
+                    .clicked()
+                {
+                    self.search_help = !self.search_help;
+                }
 
                 egui::ComboBox::from_id_salt("cat")
                     .selected_text(self.filters.cat.label())
@@ -575,6 +635,10 @@ impl eframe::App for App {
                     changed = true;
                 }
             });
+
+            if self.search_help {
+                search_help_ui(ui);
+            }
 
             if self.advanced_open {
                 changed |= self.advanced_ui(ui);
@@ -751,22 +815,44 @@ impl eframe::App for App {
                 })
                 .collect();
 
+            // Tile cards into as many columns as fit the available width at the
+            // current zoom, then masonry-pack them (each card into the shortest
+            // column) so variable-height cards stay compact.
+            let cw = card_width(slot);
+            let ncols = (((avail_w + spacing) / (cw + spacing)).floor() as usize)
+                .clamp(1, filtered.len().max(1));
+            let col_w = if ncols <= 1 {
+                (avail_w - 8.0).max(cw)
+            } else {
+                (avail_w - spacing * (ncols as f32 - 1.0)) / ncols as f32
+            };
+
+            let mut col_y = vec![0.0f32; ncols];
+            let mut placements: Vec<(f32, f32, f32)> = Vec::with_capacity(filtered.len());
+            for &h in &heights {
+                let ci = (0..ncols)
+                    .min_by(|&a, &b| col_y[a].partial_cmp(&col_y[b]).unwrap_or(std::cmp::Ordering::Equal))
+                    .unwrap_or(0);
+                let x = ci as f32 * (col_w + spacing);
+                let y = col_y[ci];
+                placements.push((x, y, h));
+                col_y[ci] = y + h + spacing;
+            }
+            let total = col_y.iter().cloned().fold(0.0f32, f32::max);
+
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show_viewport(ui, |ui, vp| {
                     ui.set_width(avail_w);
-                    let total: f32 = heights.iter().map(|h| h + spacing).sum();
-                    let (_id, block) =
-                        ui.allocate_space(Vec2::new(avail_w, total.max(1.0)));
+                    let (_id, block) = ui.allocate_space(Vec2::new(avail_w, total.max(1.0)));
                     let top = block.min.y;
-                    let mut y = 0.0f32;
                     for (k, &(si, ei)) in filtered.iter().enumerate() {
-                        let h = heights[k];
+                        let (x, y, h) = placements[k];
                         let visible = !(y + h < vp.min.y - 300.0 || y > vp.max.y + 300.0);
                         if visible {
                             let rect = Rect::from_min_size(
-                                Pos2::new(block.min.x, top + y),
-                                Vec2::new(avail_w - 8.0, h),
+                                Pos2::new(block.min.x + x, top + y),
+                                Vec2::new(col_w, h),
                             );
                             let mut child = ui.new_child(
                                 egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()),
@@ -789,7 +875,6 @@ impl eframe::App for App {
                                 );
                             }
                         }
-                        y += h + spacing;
                     }
                 });
         });
@@ -868,13 +953,15 @@ impl eframe::App for App {
                     },
                     None => self.toast("Entry unavailable"),
                 },
-                Action::OpenNested(title, items) => {
+                Action::OpenNested(title, items, uuid) => {
+                    let level = self.open_nested(title, items, uuid);
                     self.popup.clear();
-                    self.popup.push(PopupLevel { title, items });
+                    self.popup.push(level);
                 }
             }
         }
 
+        let mut nested_action: Option<Action> = None;
         if let (false, Some(atlas)) = (self.popup.is_empty(), self.atlas.as_mut()) {
             let slot = self.slot;
             let bp = &self.bp_index;
@@ -884,10 +971,13 @@ impl eframe::App for App {
             let title = level.title.clone();
             let items = &level.items;
             let count = items.len();
+            let owner = level.owner.clone();
+            let uuid = level.uuid.clone();
+            let copies = level.copies.clone();
 
             let mut close = false;
             let mut back = false;
-            let mut drill: Option<(String, Vec<Item>)> = None;
+            let mut drill: Option<card::Drill> = None;
 
             egui::Window::new(egui::RichText::new(format!("📦  {title}")).color(ACCENT))
                 .id(Id::new("nested_popup"))
@@ -909,6 +999,30 @@ impl eframe::App for App {
                             }
                         });
                     });
+                    if owner.is_some() || uuid.is_some() {
+                        if let Some(o) = &owner {
+                            ui.label(
+                                egui::RichText::new(format!("Owner: {o}"))
+                                    .color(Color32::from_rgb(190, 150, 230))
+                                    .size(12.0),
+                            );
+                        }
+                        if let Some(u) = &uuid {
+                            ui.label(
+                                egui::RichText::new(format!("UUID: {u}"))
+                                    .weak()
+                                    .size(11.0)
+                                    .monospace(),
+                            );
+                        }
+                        ui.horizontal(|ui| {
+                            for c in &copies {
+                                if ui.button(&c.label).clicked() {
+                                    nested_action = Some(Action::Copy(c.value.clone()));
+                                }
+                            }
+                        });
+                    }
                     ui.separator();
                     egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
                         if let Some(d) =
@@ -919,14 +1033,19 @@ impl eframe::App for App {
                     });
                 });
 
-            if let Some((t, its)) = drill {
-                self.popup.push(PopupLevel { title: t, items: its });
+            if let Some((t, its, u)) = drill {
+                let level = self.open_nested(t, its, u);
+                self.popup.push(level);
             } else if back {
                 self.popup.pop();
             } else if close {
                 self.popup.clear();
             }
             ctx.request_repaint();
+        }
+        if let Some(Action::Copy(s)) = nested_action {
+            ctx.copy_text(s);
+            self.toast("Copied to clipboard");
         }
 
         self.spawn_pending_fetches();
@@ -958,6 +1077,37 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_settings();
     }
+}
+
+fn search_help_ui(ui: &mut egui::Ui) {
+    ui.add_space(4.0);
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.label(egui::RichText::new("Search syntax").color(ACCENT).strong());
+        egui::Grid::new("search_help_grid")
+            .num_columns(2)
+            .spacing([14.0, 4.0])
+            .show(ui, |ui| {
+                let row = |ui: &mut egui::Ui, ex: &str, desc: &str| {
+                    ui.label(egui::RichText::new(ex).monospace().color(GOLD));
+                    ui.label(egui::RichText::new(desc).size(12.0).weak());
+                    ui.end_row();
+                };
+                row(ui, "diamond netherite", "both terms (space = AND)");
+                row(ui, "diamond AND netherite", "both terms");
+                row(ui, "diamond OR gold", "either term");
+                row(ui, "NOT shulker", "exclude a term");
+                row(ui, "\"diamond sword\"", "exact phrase");
+                row(ui, "gold AND (sword OR axe)", "group with parentheses");
+                row(ui, "netherite NOT (boots OR helmet)", "combine freely");
+            });
+        ui.label(
+            egui::RichText::new(
+                "Operators are case-insensitive. && and || also work. The category dropdown picks what the text matches against.",
+            )
+            .weak()
+            .size(11.0),
+        );
+    });
 }
 
 fn source_color(s: &Source) -> Color32 {
