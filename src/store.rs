@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -148,11 +148,14 @@ enum Backend {
     },
 }
 
+const CACHE_CAP: usize = 4096;
+
 pub struct Store {
     metas: Vec<EntryMeta>,
     interner: Interner,
     backend: Backend,
     overrides: HashMap<String, String>,
+    cache: Mutex<HashMap<usize, Arc<Entry>>>,
 }
 
 impl Store {
@@ -169,6 +172,7 @@ impl Store {
                 interner,
                 backend: Backend::Mem { entries },
                 overrides: HashMap::new(),
+                cache: Mutex::new(HashMap::new()),
             });
         }
 
@@ -217,6 +221,7 @@ impl Store {
                 kind,
             },
             overrides: HashMap::new(),
+            cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -257,10 +262,13 @@ impl Store {
         }
     }
 
-    pub fn entry(&self, i: usize) -> Option<Entry> {
+    pub fn entry(&self, i: usize) -> Option<Arc<Entry>> {
+        if let Some(hit) = self.cache.lock().unwrap().get(&i) {
+            return Some(hit.clone());
+        }
         let mut entry = match &self.backend {
             Backend::Json { mmap, spans, locs, kind } => {
-                let (spi, sub) = locs[i];
+                let (spi, sub) = *locs.get(i)?;
                 let (s, e) = spans[spi as usize];
                 let el: RawElement = serde_json::from_slice(&mmap[s as usize..e as usize]).ok()?;
                 containers::build_one(&el, *kind).into_iter().nth(sub as usize)?
@@ -272,7 +280,13 @@ impl Store {
                 apply_name(&mut entry, name);
             }
         }
-        Some(entry)
+        let arc = Arc::new(entry);
+        let mut cache = self.cache.lock().unwrap();
+        if cache.len() >= CACHE_CAP {
+            cache.clear();
+        }
+        cache.insert(i, arc.clone());
+        Some(arc)
     }
 
     pub fn filter(&self, c: &crate::search::Compiled) -> Vec<u32> {
@@ -304,6 +318,7 @@ impl Store {
         }
         if changed {
             self.overrides.insert(uuid.to_string(), name.to_string());
+            self.cache.lock().unwrap().clear();
         }
         changed
     }

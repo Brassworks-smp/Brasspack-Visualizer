@@ -1,6 +1,7 @@
 mod card;
 
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Instant;
 
 use eframe::egui::{
@@ -421,7 +422,7 @@ impl App {
         }
     }
 
-    fn entry(&self, si: usize, ei: usize) -> Option<Entry> {
+    fn entry(&self, si: usize, ei: usize) -> Option<Arc<Entry>> {
         self.sources.get(si)?.store.as_ref()?.entry(ei)
     }
 
