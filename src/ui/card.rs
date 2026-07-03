@@ -100,6 +100,9 @@ pub(crate) fn draw_card(
         .rounding(Rounding::same(10.0))
         .inner_margin(egui::Margin::same(12.0))
         .show(ui, |ui| {
+            // Fill the full column width so cards sit flush with no gaps between
+            // them, rather than shrinking to the 9-slot grid's content width.
+            ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 let (rect, hdr_resp) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
                 paint_slot_bg(ui, rect, false);
@@ -199,10 +202,15 @@ pub(crate) fn draw_card(
 
             let cols = entry.cols.max(1);
             let rows = entry.rows.max(1);
-            let (grid_rect, _) = ui.allocate_exact_size(
-                Vec2::new(cols as f32 * slot, rows as f32 * slot),
+            let grid_w = cols as f32 * slot;
+            // Center the fixed-size slot grid in the (wider) card.
+            let indent = ((ui.available_width() - grid_w) * 0.5).max(0.0);
+            let (row_rect, _) = ui.allocate_exact_size(
+                Vec2::new((ui.available_width()).max(grid_w), rows as f32 * slot),
                 Sense::hover(),
             );
+            let grid_rect =
+                Rect::from_min_size(row_rect.min + Vec2::new(indent, 0.0), Vec2::new(grid_w, rows as f32 * slot));
             let mut by_slot: std::collections::HashMap<i32, &Item> =
                 std::collections::HashMap::new();
             for it in &entry.items {
