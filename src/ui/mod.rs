@@ -79,6 +79,13 @@ impl SortKey {
     }
 }
 
+const TOTALS_LIMIT: usize = 20000;
+
+enum Totals {
+    TooMany(usize),
+    Ready(Vec<(String, i64)>),
+}
+
 struct Source {
     id: u64,
     path: String,
@@ -126,6 +133,9 @@ pub struct App {
     filtered: Vec<(usize, usize)>,
     filters: Filters,
     sort: SortKey,
+    totals_open: bool,
+    totals: Option<Totals>,
+    totals_filter: String,
     mode: Mode,
     slot: f32,
     loading_atlas: bool,
@@ -148,6 +158,13 @@ pub struct App {
 
 fn filename(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
+}
+
+fn accumulate_item(it: &Item, map: &mut std::collections::HashMap<String, i64>) {
+    *map.entry(it.id.clone()).or_insert(0) += it.count.max(0);
+    for c in &it.contents {
+        accumulate_item(c, map);
+    }
 }
 
 fn open_store(path: &str, mode: Mode) -> Result<Store, String> {
@@ -182,6 +199,9 @@ impl App {
             filtered: Vec::new(),
             filters: Filters::default(),
             sort: SortKey::Default,
+            totals_open: false,
+            totals: None,
+            totals_filter: String::new(),
             mode: Mode::from_label(&settings.mode),
             slot: settings.zoom.clamp(24.0, 64.0),
             loading_atlas: false,
@@ -284,7 +304,27 @@ impl App {
         }
         self.filtered = out;
         self.sort_filtered();
+        self.totals = None;
         self.status = format!("{} of {} shown", self.filtered.len(), total);
+    }
+
+    fn compute_totals(&self) -> Totals {
+        if self.filtered.len() > TOTALS_LIMIT {
+            return Totals::TooMany(self.filtered.len());
+        }
+        let mut map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for &(si, ei) in &self.filtered {
+            let Some(store) = self.sources.get(si).and_then(|s| s.store.as_ref()) else {
+                continue;
+            };
+            let Some(entry) = store.entry(ei) else { continue };
+            for it in entry.items.iter().chain(entry.upgrades.iter()) {
+                accumulate_item(it, &mut map);
+            }
+        }
+        let mut v: Vec<(String, i64)> = map.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Totals::Ready(v)
     }
 
     fn sort_filtered(&mut self) {
@@ -624,6 +664,15 @@ impl eframe::App for App {
                 if z.drag_stopped() {
                     dirty = true;
                 }
+
+                ui.separator();
+                if ui
+                    .selectable_label(self.totals_open, "Σ Totals")
+                    .on_hover_text("Aggregate item counts across the filtered results")
+                    .clicked()
+                {
+                    self.totals_open = !self.totals_open;
+                }
             });
 
             ui.add_space(2.0);
@@ -910,6 +959,89 @@ impl eframe::App for App {
         let mut pick_atlas = false;
         let mut animating = false;
         let gframe = ((ctx.input(|i| i.time) * 12.0) as usize) % GLINT_FRAMES;
+
+        if self.totals_open {
+            if self.totals.is_none() {
+                self.totals = Some(self.compute_totals());
+            }
+            let totals = self.totals.take();
+            let filter = &mut self.totals_filter;
+            let mut close = false;
+            egui::SidePanel::right("totals")
+                .default_width(250.0)
+                .show(ctx, |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.heading(egui::RichText::new("Σ Totals").color(ACCENT));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Close").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.label(
+                        egui::RichText::new("Summed across filtered results")
+                            .weak()
+                            .size(11.0),
+                    );
+                    ui.separator();
+                    match &totals {
+                        Some(Totals::TooMany(n)) => {
+                            ui.add_space(12.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{n} results is too many to aggregate.\nFilter to under {TOTALS_LIMIT} first."
+                                ))
+                                .color(Color32::from_gray(160)),
+                            );
+                        }
+                        Some(Totals::Ready(v)) => {
+                            ui.label(
+                                egui::RichText::new(format!("{} distinct items", v.len()))
+                                    .weak()
+                                    .size(11.0),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(filter)
+                                    .hint_text("filter items…")
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.add_space(4.0);
+                            let needle = filter.trim().to_lowercase();
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    for (id, count) in v {
+                                        let name = crate::model::prettify_id(id);
+                                        if !needle.is_empty()
+                                            && !id.to_lowercase().contains(&needle)
+                                            && !name.to_lowercase().contains(&needle)
+                                        {
+                                            continue;
+                                        }
+                                        ui.horizontal(|ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(crate::model::format_count(*count))
+                                                        .color(GOLD)
+                                                        .monospace(),
+                                                )
+                                                .selectable(false),
+                                            )
+                                            .on_hover_text(count.to_string());
+                                            ui.label(name);
+                                        });
+                                    }
+                                });
+                        }
+                        None => {}
+                    }
+                });
+            self.totals = totals;
+            if close {
+                self.totals_open = false;
+            }
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.atlas.is_none() {
