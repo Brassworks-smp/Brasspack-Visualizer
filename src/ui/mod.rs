@@ -79,7 +79,7 @@ impl SortKey {
     }
 }
 
-const TOTALS_LIMIT: usize = 20000;
+const TOTALS_LIMIT: usize = usize::MAX;
 
 enum Totals {
     TooMany(usize),
